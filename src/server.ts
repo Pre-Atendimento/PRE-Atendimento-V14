@@ -228,6 +228,34 @@ app.get('/health', (_req, res) => {
   res.json({ message: '✅ PRE-Atendimento-V8 iniciado com sucesso!', version: '1.0.0', status: 'running' });
 });
 
+/* ── Setup: criar primeiro admin (só funciona quando não há usuários) ── */
+app.post('/api/setup', async (req, res) => {
+  try {
+    const { rows: existing } = await pool.query('SELECT COUNT(*) FROM public.users');
+    if (parseInt(existing[0].count, 10) > 0) {
+      res.status(403).json({ success: false, error: 'Setup já realizado. Endpoint desativado.' });
+      return;
+    }
+    const { name, email, password } = req.body as { name?: string; email?: string; password?: string };
+    if (!name || !email || !password) {
+      res.status(400).json({ success: false, error: 'Nome, e-mail e senha são obrigatórios.' });
+      return;
+    }
+    if (password.length < 6) {
+      res.status(400).json({ success: false, error: 'Senha deve ter pelo menos 6 caracteres.' });
+      return;
+    }
+    const result = await registerUser(name, email, password, 'admin');
+    if (!result.success) {
+      res.status(400).json(result);
+      return;
+    }
+    res.status(201).json({ success: true, message: 'Admin criado com sucesso! Faça login agora.' });
+  } catch (err: unknown) {
+    res.status(500).json({ success: false, error: (err as Error).message });
+  }
+});
+
 /* ── Auth: Login ─────────────────────────────────────────────────────── */
 app.post('/api/auth/login', async (req, res) => {
   const { email, password } = req.body as { email?: string; password?: string };
