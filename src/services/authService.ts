@@ -1,5 +1,5 @@
-import pg from 'pg';
 import bcrypt from 'bcryptjs';
+import { supabaseAdmin } from './supabase.js';
 
 interface UserRow {
   id: string;
@@ -9,61 +9,47 @@ interface UserRow {
   role: string;
   active: boolean;
   tenant_id: string | null;
-  tenant_name: string | null;
-  tenant_slug: string | null;
-}
-
-function getClient() {
-  return new pg.Client({
-    connectionString: process.env.DATABASE_URL,
-    ssl: process.env.DATABASE_URL?.includes('localhost') ? false : { rejectUnauthorized: false },
-  });
+  tenants: { name: string; slug: string } | null;
 }
 
 export async function loginUser(email: string, password: string) {
-  const client = getClient();
-  try {
-    await client.connect();
-    const { rows } = await client.query<UserRow>(
-      `SELECT u.id, u.name, u.email, u.password_hash, u.role, u.active,
-              u.tenant_id, t.name AS tenant_name, t.slug AS tenant_slug
-       FROM public.users u
-       LEFT JOIN public.tenants t ON t.id = u.tenant_id
-       WHERE u.email = $1
-       LIMIT 1`,
-      [email.toLowerCase().trim()]
-    );
+  const { data: user, error } = await supabaseAdmin
+    .from('users')
+    .select('id, name, email, password_hash, role, active, tenant_id, tenants(name, slug)')
+    .eq('email', email.toLowerCase().trim())
+    .limit(1)
+    .maybeSingle() as { data: UserRow | null; error: unknown };
 
-    if (!rows.length) {
-      return { success: false, error: 'E-mail ou senha incorretos.' };
-    }
-
-    const user = rows[0];
-
-    if (!user.active) {
-      return { success: false, error: 'Conta desativada. Fale com o administrador.' };
-    }
-
-    const match = await bcrypt.compare(password, user.password_hash);
-    if (!match) {
-      return { success: false, error: 'E-mail ou senha incorretos.' };
-    }
-
-    return {
-      success: true,
-      user: {
-        id:         user.id,
-        name:       user.name,
-        email:      user.email,
-        role:       user.role,
-        tenantId:   user.tenant_id   || null,
-        tenantName: user.tenant_name || 'Default',
-        tenantSlug: user.tenant_slug || 'default',
-      },
-    };
-  } finally {
-    await client.end();
+  if (error) {
+    console.error('[auth] loginUser error:', error);
+    return { success: false, error: 'Erro ao acessar o banco de dados.' };
   }
+
+  if (!user) {
+    return { success: false, error: 'E-mail ou senha incorretos.' };
+  }
+
+  if (!user.active) {
+    return { success: false, error: 'Conta desativada. Fale com o administrador.' };
+  }
+
+  const match = await bcrypt.compare(password, user.password_hash);
+  if (!match) {
+    return { success: false, error: 'E-mail ou senha incorretos.' };
+  }
+
+  return {
+    success: true,
+    user: {
+      id:         user.id,
+      name:       user.name,
+      email:      user.email,
+      role:       user.role,
+      tenantId:   user.tenant_id              || null,
+      tenantName: user.tenants?.name          || 'Default',
+      tenantSlug: user.tenants?.slug          || 'default',
+    },
+  };
 }
 
 export async function registerUser(
@@ -73,50 +59,61 @@ export async function registerUser(
   role: string,
   tenantId?: string,
 ) {
-  const client = getClient();
-  try {
-    await client.connect();
+  const normalizedEmail = email.toLowerCase().trim();
 
-    const { rows: existing } = await client.query(
-      'SELECT id FROM public.users WHERE email = $1 LIMIT 1',
-      [email.toLowerCase().trim()]
-    );
+  const { data: existing } = await supabaseAdmin
+    .from('users')
+    .select('id')
+    .eq('email', normalizedEmail)
+    .limit(1)
+    .maybeSingle();
 
-    if (existing.length) {
-      return { success: false, error: 'Já existe uma conta com este e-mail.' };
-    }
-
-    let resolvedTenantId = tenantId || null;
-    if (!resolvedTenantId) {
-      const { rows: tenantRows } = await client.query<{ id: string }>(
-        `SELECT id FROM public.tenants WHERE slug = 'default' LIMIT 1`
-      );
-      resolvedTenantId = tenantRows[0]?.id || null;
-    }
-
-    const password_hash = await bcrypt.hash(password, 10);
-
-    const { rows } = await client.query<{ id: string; name: string; email: string; role: string; tenant_id: string }>(
-      `INSERT INTO public.users (name, email, password_hash, role, active, tenant_id, max_instances)
-       VALUES ($1, $2, $3, $4, true, $5, 3)
-       RETURNING id, name, email, role, tenant_id`,
-      [name.trim(), email.toLowerCase().trim(), password_hash, role, resolvedTenantId]
-    );
-
-    const user = rows[0];
-    return {
-      success: true,
-      user: {
-        id:       user.id,
-        name:     user.name,
-        email:    user.email,
-        role:     user.role,
-        tenantId: user.tenant_id || null,
-      },
-    };
-  } finally {
-    await client.end();
+  if (existing) {
+    return { success: false, error: 'Já existe uma conta com este e-mail.' };
   }
+
+  let resolvedTenantId = tenantId || null;
+  if (!resolvedTenantId) {
+    const { data: tenant } = await supabaseAdmin
+      .from('tenants')
+      .select('id')
+      .eq('slug', 'default')
+      .limit(1)
+      .maybeSingle();
+    resolvedTenantId = tenant?.id || null;
+  }
+
+  const password_hash = await bcrypt.hash(password, 10);
+
+  const { data: user, error } = await supabaseAdmin
+    .from('users')
+    .insert({
+      name:          name.trim(),
+      email:         normalizedEmail,
+      password_hash,
+      role,
+      active:        true,
+      tenant_id:     resolvedTenantId,
+      max_instances: 3,
+    })
+    .select('id, name, email, role, tenant_id')
+    .single();
+
+  if (error) {
+    console.error('[auth] registerUser error:', error);
+    return { success: false, error: 'Erro ao criar usuário.' };
+  }
+
+  return {
+    success: true,
+    user: {
+      id:       user.id,
+      name:     user.name,
+      email:    user.email,
+      role:     user.role,
+      tenantId: user.tenant_id || null,
+    },
+  };
 }
 
 export async function requestPasswordReset(
@@ -125,19 +122,16 @@ export async function requestPasswordReset(
 ): Promise<{ success: boolean; error?: string }> {
   const normalizedEmail = email.toLowerCase().trim();
 
-  const client = getClient();
-  try {
-    await client.connect();
-    const { rows } = await client.query(
-      'SELECT id FROM public.users WHERE email = $1 LIMIT 1',
-      [normalizedEmail],
-    );
-    if (!rows.length) {
-      console.log(`[auth] requestPasswordReset: e-mail não encontrado — resposta genérica`);
-      return { success: true };
-    }
-  } finally {
-    await client.end();
+  const { data } = await supabaseAdmin
+    .from('users')
+    .select('id')
+    .eq('email', normalizedEmail)
+    .limit(1)
+    .maybeSingle();
+
+  if (!data) {
+    console.log(`[auth] requestPasswordReset: e-mail não encontrado — resposta genérica`);
+    return { success: true };
   }
 
   console.warn('[auth] requestPasswordReset: funcionalidade de e-mail não configurada neste ambiente.');
