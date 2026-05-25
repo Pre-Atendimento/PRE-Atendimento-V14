@@ -1,6 +1,5 @@
 import pg from 'pg';
 import bcrypt from 'bcryptjs';
-import { supabaseAdmin, supabaseClient } from './supabase.js';
 
 interface UserRow {
   id: string;
@@ -17,7 +16,7 @@ interface UserRow {
 function getClient() {
   return new pg.Client({
     connectionString: process.env.DATABASE_URL,
-    ssl: { rejectUnauthorized: false },
+    ssl: process.env.DATABASE_URL?.includes('localhost') ? false : { rejectUnauthorized: false },
   });
 }
 
@@ -122,7 +121,7 @@ export async function registerUser(
 
 export async function requestPasswordReset(
   email: string,
-  redirectTo: string,
+  _redirectTo: string,
 ): Promise<{ success: boolean; error?: string }> {
   const normalizedEmail = email.toLowerCase().trim();
 
@@ -134,74 +133,20 @@ export async function requestPasswordReset(
       [normalizedEmail],
     );
     if (!rows.length) {
-      console.log(`[auth] requestPasswordReset: e-mail não encontrado em public.users — resposta genérica`);
+      console.log(`[auth] requestPasswordReset: e-mail não encontrado — resposta genérica`);
       return { success: true };
     }
   } finally {
     await client.end();
   }
 
-  console.log(`[auth] requestPasswordReset: chamando resetPasswordForEmail → redirectTo="${redirectTo}"`);
-  const { error: resetErr } = await supabaseAdmin.auth.resetPasswordForEmail(normalizedEmail, { redirectTo });
-
-  if (!resetErr) {
-    console.log(`[auth] requestPasswordReset: e-mail enviado com sucesso para "${normalizedEmail}"`);
-    return { success: true };
-  }
-
-  console.error(`[auth] requestPasswordReset: resetPasswordForEmail error: ${resetErr.message}`);
-
-  const notFound = resetErr.message.toLowerCase().includes('not found')
-    || resetErr.message.toLowerCase().includes('user not found')
-    || resetErr.message.toLowerCase().includes('no user found');
-
-  if (notFound) {
-    console.log(`[auth] requestPasswordReset: usuário não existe em auth.users — criando para "${normalizedEmail}"`);
-    const tmpPassword = `tmp-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
-    const { error: createErr } = await supabaseAdmin.auth.admin.createUser({
-      email: normalizedEmail,
-      email_confirm: true,
-      password: tmpPassword,
-    });
-    if (createErr) {
-      console.error(`[auth] requestPasswordReset: falha ao criar em auth.users: ${createErr.message}`);
-      return { success: true };
-    }
-    const { error: retryErr } = await supabaseAdmin.auth.resetPasswordForEmail(normalizedEmail, { redirectTo });
-    if (retryErr) {
-      console.error(`[auth] requestPasswordReset: retry error: ${retryErr.message}`);
-    } else {
-      console.log(`[auth] requestPasswordReset: e-mail enviado com sucesso (retry) para "${normalizedEmail}"`);
-    }
-  }
-
+  console.warn('[auth] requestPasswordReset: funcionalidade de e-mail não configurada neste ambiente.');
   return { success: true };
 }
 
 export async function resetPassword(
-  accessToken: string,
-  newPassword: string,
+  _accessToken: string,
+  _newPassword: string,
 ): Promise<{ success: boolean; error?: string }> {
-  const { data: { user }, error } = await supabaseAdmin.auth.getUser(accessToken);
-
-  if (error || !user?.email) {
-    return { success: false, error: 'Link inválido ou expirado. Solicite um novo link.' };
-  }
-
-  const password_hash = await bcrypt.hash(newPassword, 10);
-  const client = getClient();
-  try {
-    await client.connect();
-    const { rows } = await client.query(
-      'UPDATE public.users SET password_hash = $1, updated_at = NOW() WHERE email = $2 RETURNING id',
-      [password_hash, user.email.toLowerCase()],
-    );
-    if (!rows.length) {
-      return { success: false, error: 'Usuário não encontrado.' };
-    }
-  } finally {
-    await client.end();
-  }
-
-  return { success: true };
+  return { success: false, error: 'Redefinição de senha por token não está disponível. Contate o administrador.' };
 }

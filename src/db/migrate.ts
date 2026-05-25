@@ -77,33 +77,6 @@ const SQL_MIGRATIONS: { name: string; sql: string }[] = [
     `,
   },
   {
-    name: '005_enable_rls',
-    sql: `
-      ALTER TABLE public.instances ENABLE ROW LEVEL SECURITY;
-      ALTER TABLE public.instance_logs ENABLE ROW LEVEL SECURITY;
-
-      DO $$ BEGIN
-        CREATE POLICY "service_role_all_instances" ON public.instances
-          FOR ALL TO service_role USING (true) WITH CHECK (true);
-      EXCEPTION WHEN duplicate_object THEN NULL; END $$;
-
-      DO $$ BEGIN
-        CREATE POLICY "anon_select_instances" ON public.instances
-          FOR SELECT TO anon USING (true);
-      EXCEPTION WHEN duplicate_object THEN NULL; END $$;
-
-      DO $$ BEGIN
-        CREATE POLICY "service_role_all_logs" ON public.instance_logs
-          FOR ALL TO service_role USING (true) WITH CHECK (true);
-      EXCEPTION WHEN duplicate_object THEN NULL; END $$;
-
-      DO $$ BEGIN
-        CREATE POLICY "anon_select_logs" ON public.instance_logs
-          FOR SELECT TO anon USING (true);
-      EXCEPTION WHEN duplicate_object THEN NULL; END $$;
-    `,
-  },
-  {
     name: '006_create_tenants_table',
     sql: `
       CREATE TABLE IF NOT EXISTS public.tenants (
@@ -115,12 +88,6 @@ const SQL_MIGRATIONS: { name: string; sql: string }[] = [
         updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
       );
       CREATE INDEX IF NOT EXISTS idx_tenants_slug ON public.tenants (slug);
-
-      ALTER TABLE public.tenants ENABLE ROW LEVEL SECURITY;
-      DO $$ BEGIN
-        CREATE POLICY "service_role_all_tenants" ON public.tenants
-          FOR ALL TO service_role USING (true) WITH CHECK (true);
-      EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 
       INSERT INTO public.tenants (name, slug)
       VALUES ('Default', 'default')
@@ -156,58 +123,10 @@ const SQL_MIGRATIONS: { name: string; sql: string }[] = [
     `,
   },
   {
-    name: '009_fix_rls_instance_isolation',
-    sql: `
-      DROP POLICY IF EXISTS "anon_select_instances" ON public.instances;
-      DROP POLICY IF EXISTS "anon_select_logs"      ON public.instance_logs;
-
-      DO $$ BEGIN
-        CREATE POLICY "owner_select_instances" ON public.instances
-          FOR SELECT TO authenticated
-          USING (created_by::text = auth.uid()::text);
-      EXCEPTION WHEN duplicate_object THEN NULL; END $$;
-
-      DO $$ BEGIN
-        CREATE POLICY "owner_insert_instances" ON public.instances
-          FOR INSERT TO authenticated
-          WITH CHECK (created_by::text = auth.uid()::text);
-      EXCEPTION WHEN duplicate_object THEN NULL; END $$;
-
-      DO $$ BEGIN
-        CREATE POLICY "owner_update_instances" ON public.instances
-          FOR UPDATE TO authenticated
-          USING (created_by::text = auth.uid()::text)
-          WITH CHECK (created_by::text = auth.uid()::text);
-      EXCEPTION WHEN duplicate_object THEN NULL; END $$;
-
-      DO $$ BEGIN
-        CREATE POLICY "owner_delete_instances" ON public.instances
-          FOR DELETE TO authenticated
-          USING (created_by::text = auth.uid()::text);
-      EXCEPTION WHEN duplicate_object THEN NULL; END $$;
-
-      DO $$ BEGIN
-        CREATE POLICY "owner_select_logs" ON public.instance_logs
-          FOR SELECT TO authenticated
-          USING (
-            instance_id IN (
-              SELECT id FROM public.instances
-              WHERE created_by::text = auth.uid()::text
-            )
-          );
-      EXCEPTION WHEN duplicate_object THEN NULL; END $$;
-    `,
-  },
-  {
     name: '010_add_provider_to_instances',
     sql: `
       ALTER TABLE public.instances
         ADD COLUMN IF NOT EXISTS provider TEXT NOT NULL DEFAULT 'evo-go';
-
-      UPDATE public.instances
-      SET provider = 'evolution-api'
-      WHERE provider = 'evo-go'
-        AND metadata->>'provider' = 'evolution-api';
 
       CREATE INDEX IF NOT EXISTS idx_instances_provider ON public.instances (provider);
     `,
@@ -246,61 +165,74 @@ const SQL_MIGRATIONS: { name: string; sql: string }[] = [
       );
       CREATE INDEX IF NOT EXISTS idx_catalog_collections_tenant ON public.catalog_collections (tenant_id);
       CREATE INDEX IF NOT EXISTS idx_catalog_collections_created_by ON public.catalog_collections (created_by);
-
-      ALTER TABLE public.catalog_collections ENABLE ROW LEVEL SECURITY;
-      DO $$ BEGIN
-        CREATE POLICY "service_role_all_catalog_collections" ON public.catalog_collections
-          FOR ALL TO service_role USING (true) WITH CHECK (true);
-      EXCEPTION WHEN duplicate_object THEN NULL; END $$;
     `,
   },
   {
     name: '014_create_catalog_items',
     sql: `
       CREATE TABLE IF NOT EXISTS public.catalog_items (
-        id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-        name          TEXT NOT NULL,
-        description   TEXT,
-        price         NUMERIC(10,2),
-        collection_id UUID REFERENCES public.catalog_collections(id) ON DELETE SET NULL,
-        tenant_id     UUID REFERENCES public.tenants(id) ON DELETE CASCADE,
-        created_by    UUID REFERENCES public.users(id)   ON DELETE SET NULL,
-        created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-        updated_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        name            TEXT NOT NULL,
+        description     TEXT,
+        price           NUMERIC(10,2),
+        currency        TEXT DEFAULT 'BRL',
+        availability    TEXT DEFAULT 'in stock',
+        image_url       TEXT,
+        meta_product_id TEXT,
+        collection_id   UUID REFERENCES public.catalog_collections(id) ON DELETE SET NULL,
+        tenant_id       UUID REFERENCES public.tenants(id) ON DELETE CASCADE,
+        created_by      UUID REFERENCES public.users(id)   ON DELETE SET NULL,
+        created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
       );
       CREATE INDEX IF NOT EXISTS idx_catalog_items_tenant ON public.catalog_items (tenant_id);
       CREATE INDEX IF NOT EXISTS idx_catalog_items_collection ON public.catalog_items (collection_id);
-
-      ALTER TABLE public.catalog_items ENABLE ROW LEVEL SECURITY;
-      DO $$ BEGIN
-        CREATE POLICY "service_role_all_catalog_items" ON public.catalog_items
-          FOR ALL TO service_role USING (true) WITH CHECK (true);
-      EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+    `,
+  },
+  {
+    name: '015_create_system_config',
+    sql: `
+      CREATE TABLE IF NOT EXISTS public.system_config (
+        key        TEXT PRIMARY KEY,
+        value      TEXT NOT NULL DEFAULT '',
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
+    `,
+  },
+  {
+    name: '016_create_tenant_meta_config',
+    sql: `
+      CREATE TABLE IF NOT EXISTS public.tenant_meta_config (
+        id                 UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        tenant_id          UUID REFERENCES public.tenants(id) ON DELETE CASCADE,
+        user_id            UUID REFERENCES public.users(id)   ON DELETE CASCADE,
+        meta_access_token  TEXT,
+        meta_business_id   TEXT,
+        meta_catalog_id    TEXT,
+        meta_waba_id       TEXT,
+        updated_at         TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        UNIQUE (tenant_id, user_id)
+      );
     `,
   },
 ];
 
 export async function runMigrations(): Promise<void> {
-  if (process.env.RUN_MIGRATIONS !== 'true') {
-    console.log('ℹ️  RUN_MIGRATIONS não habilitado — pulando migrations.');
-    return;
-  }
-
   const connectionString = process.env.DATABASE_URL;
 
   if (!connectionString) {
-    console.error('❌ FATAL: DATABASE_URL (SUPABASE_DB_URL) é obrigatória para rodar migrations. Encerrando aplicação.');
+    console.error('❌ FATAL: DATABASE_URL é obrigatória para rodar migrations.');
     process.exit(1);
   }
 
   const client = new pg.Client({
     connectionString,
-    ssl: { rejectUnauthorized: false },
+    ssl: connectionString.includes('localhost') ? false : { rejectUnauthorized: false },
   });
 
   try {
     await client.connect();
-    console.log('✅ Conectado ao Supabase via pooler');
+    console.log('✅ Conectado ao banco de dados');
 
     await client.query(SQL_MIGRATIONS[0].sql);
 

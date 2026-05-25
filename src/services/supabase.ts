@@ -1,21 +1,28 @@
-import { createClient } from '@supabase/supabase-js';
-import type { Database } from '../types/database.js';
+/**
+ * Database access layer using direct pg pool.
+ * Replaces @supabase/supabase-js with native PostgreSQL queries.
+ */
+import pool from '../db/pool.js';
 
-const supabaseUrl        = process.env.SUPABASE_URL;
-const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
-const supabaseAnonKey    = process.env.SUPABASE_ANON_KEY || '';
+export { pool as db };
 
-if (!supabaseUrl || !supabaseServiceKey) {
-  console.error('❌ FATAL: SUPABASE_URL e SUPABASE_SERVICE_ROLE_KEY são obrigatórias. Encerrando aplicação.');
-  process.exit(1);
-}
+// Stub out auth methods — custom JWT auth is used instead
+export const supabaseAdmin = {
+  auth: {
+    resetPasswordForEmail: async (_email: string, _opts?: { redirectTo?: string }) => {
+      console.warn('[auth] resetPasswordForEmail: Supabase auth removed. Use a custom email flow.');
+      return { error: { message: 'Redefinição de senha por e-mail não está disponível neste ambiente. Contate o administrador.' } };
+    },
+    getUser: async (_token: string) => {
+      return { data: { user: null }, error: { message: 'Supabase auth não disponível.' } };
+    },
+    admin: {
+      createUser: async (_opts: unknown) => {
+        return { error: { message: 'Supabase auth não disponível.' } };
+      },
+    },
+  },
+};
 
-export const supabaseAdmin = createClient<Database>(supabaseUrl, supabaseServiceKey, {
-  auth: { persistSession: false },
-});
-
-export const supabaseClient = createClient<Database>(supabaseUrl, supabaseAnonKey, {
-  auth: { persistSession: false },
-});
-
-export { supabaseUrl };
+export const supabaseUrl = '';
+export const supabaseClient = supabaseAdmin;

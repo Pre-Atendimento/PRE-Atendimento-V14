@@ -1,4 +1,4 @@
-import { supabaseAdmin } from './supabase.js';
+import pool from '../db/pool.js';
 import {
   createInstance    as callCreate,
   connectInstance   as callConnect,
@@ -7,7 +7,6 @@ import {
   deleteInstance    as callDelete,
 } from './evolutionGo.js';
 
-/* Extrai o token da instância da resposta do /instance/create. */
 function extractInstanceToken(data: unknown): string {
   if (!data || typeof data !== 'object') return '';
   const d = data as Record<string, unknown>;
@@ -26,34 +25,27 @@ function extractInstanceToken(data: unknown): string {
   return '';
 }
 
-/* ── Buscar UUID e token da instância no banco ──────────────────────────
-   Filtros aplicados para usuário comum (isAdmin=false):
-     - tenant_id = tenantId  (isola pelo tenant)
-     - created_by = userId   (isola pelo dono — bloqueio principal)
-   Admin não recebe nenhum filtro restritivo.
-*/
 async function getInstanceMeta(
   instanceName: string,
   tenantId?: string,
   isAdmin = false,
   userId?: string,
 ): Promise<{ uuid: string; token: string; found: boolean }> {
-  let query = supabaseAdmin
-    .from('instances')
-    .select('metadata')
-    .eq('instance_name', instanceName);
+  let sql = `SELECT metadata FROM public.instances WHERE instance_name = $1`;
+  const params: unknown[] = [instanceName];
 
   if (!isAdmin) {
-    if (tenantId) query = query.eq('tenant_id', tenantId);
-    if (userId)   query = query.eq('created_by', userId);
+    if (tenantId) { sql += ` AND tenant_id = $${params.length + 1}`; params.push(tenantId); }
+    if (userId)   { sql += ` AND created_by = $${params.length + 1}`; params.push(userId); }
   }
 
-  const { data: inst } = await query.maybeSingle();
+  sql += ' LIMIT 1';
+  const { rows } = await pool.query(sql, params);
+  const inst = rows[0];
 
   if (!inst?.metadata) return { uuid: '', token: '', found: !!inst };
   const meta = inst.metadata as Record<string, unknown>;
 
-  /* Tentar ler UUID de create.data primeiro */
   const newData = (meta.create as Record<string, unknown> | undefined)
     ?.data as Record<string, unknown> | undefined;
   const oldData = meta.data as Record<string, unknown> | undefined;
@@ -62,18 +54,15 @@ async function getInstanceMeta(
     (newData?.id  as string | undefined) ||
     (oldData?.id  as string | undefined) || '';
 
-  /* Token: primeiro tenta campo de topo (salvo explicitamente), depois os aninhados */
   const token =
     (meta.token   as string | undefined) ||
     (newData?.token as string | undefined) ||
     (oldData?.token as string | undefined) || '';
 
   if (uuid || token) return { uuid, token, found: true };
-
   return { uuid: '', token: '', found: true };
 }
 
-/* ── Criar e persistir instância (API-first, sem ghost records) ─── */
 export async function createInstanceAndPersist(
   instanceName: string,
   tenantId:     string,
@@ -82,22 +71,18 @@ export async function createInstanceAndPersist(
   overrideUrl?: string,
   overrideKey?: string,
 ) {
-  /* 1. Verificar duplicata no tenant */
-  const { data: existing } = await supabaseAdmin
-    .from('instances')
-    .select('id, instance_name, status')
-    .eq('instance_name', instanceName)
-    .eq('tenant_id', tenantId)
-    .maybeSingle();
+  const { rows: existing } = await pool.query(
+    `SELECT id, instance_name, status FROM public.instances WHERE instance_name = $1 AND tenant_id = $2 LIMIT 1`,
+    [instanceName, tenantId]
+  );
 
-  if (existing) {
+  if (existing.length) {
     return {
       success: false,
-      error: `Instância "${instanceName}" já existe com status "${existing.status}".`,
+      error: `Instância "${instanceName}" já existe com status "${existing[0].status}".`,
     };
   }
 
-  /* 2. Chamar API PRIMEIRO */
   console.log('[instanceService] ▶ Passo 1/2: criar instância na API');
   const createResult = await callCreate(instanceName, token, overrideUrl, overrideKey);
 
@@ -110,7 +95,6 @@ export async function createInstanceAndPersist(
     };
   }
 
-  /* 3. Conectar */
   let connectResult = null;
   const instanceToken = extractInstanceToken(createResult.data);
 
@@ -121,26 +105,22 @@ export async function createInstanceAndPersist(
     console.warn('[instanceService] ⚠️  Token não encontrado — pulando connect');
   }
 
-  /* 4. Persistir no banco vinculado ao tenant e ao usuário criador */
-  const { data: record, error: insertError } = await supabaseAdmin
-    .from('instances')
-    .insert({
-      instance_name: instanceName,
-      status:        'active',
-      provider:      'evo-go',
-      tenant_id:     tenantId,
-      created_by:    createdBy,
-      metadata: {
-        create:  createResult.data  ?? null,
-        connect: connectResult?.data ?? null,
-        token:   instanceToken       || null,
-      },
-    })
-    .select()
-    .single();
+  const metadata = {
+    create:  createResult.data  ?? null,
+    connect: connectResult?.data ?? null,
+    token:   instanceToken       || null,
+  };
 
-  if (insertError || !record) {
-    console.error('[instanceService] ✖ Erro ao persistir:', insertError?.message);
+  const { rows: inserted } = await pool.query(
+    `INSERT INTO public.instances (instance_name, status, provider, tenant_id, created_by, metadata)
+     VALUES ($1, 'active', 'evo-go', $2, $3, $4)
+     RETURNING *`,
+    [instanceName, tenantId, createdBy, JSON.stringify(metadata)]
+  );
+
+  const record = inserted[0];
+
+  if (!record) {
     return {
       success: true,
       data: {
@@ -151,18 +131,14 @@ export async function createInstanceAndPersist(
         create_response:  createResult.data,
         connect_response: connectResult?.data ?? null,
       },
-      warning: 'Instância criada na API mas não foi possível salvar localmente: ' + (insertError?.message || ''),
+      warning: 'Instância criada na API mas não foi possível salvar localmente.',
     };
   }
 
-  await supabaseAdmin.from('instance_logs').insert({
-    instance_id: record.id,
-    event:   'created',
-    payload: {
-      create:  createResult.data,
-      connect: connectResult ? { success: connectResult.success, data: connectResult.data } : null,
-    },
-  });
+  await pool.query(
+    `INSERT INTO public.instance_logs (instance_id, event, payload) VALUES ($1, 'created', $2)`,
+    [record.id, JSON.stringify({ create: createResult.data, connect: connectResult ? { success: connectResult.success, data: connectResult.data } : null })]
+  );
 
   return {
     success: true,
@@ -176,27 +152,28 @@ export async function createInstanceAndPersist(
   };
 }
 
-/* ── Listar instâncias ────────────────────────────────────────────────
-   Admin (isAdmin=true): retorna todas as instâncias de todos os tenants.
-   Usuário comum: retorna APENAS as do próprio tenant E criadas pelo próprio usuário.
-*/
 export async function listInstances(tenantId?: string, isAdmin = false, userId?: string) {
-  let query = supabaseAdmin
-    .from('instances')
-    .select('id, instance_name, status, provider, created_at, updated_at, metadata, tenant_id, created_by')
-    .order('created_at', { ascending: false });
+  let sql = `SELECT id, instance_name, status, provider, created_at, updated_at, metadata, tenant_id, created_by
+             FROM public.instances`;
+  const params: unknown[] = [];
+  const conds: string[] = [];
 
   if (!isAdmin) {
-    if (tenantId) query = query.eq('tenant_id', tenantId);
-    if (userId)   query = query.eq('created_by', userId);
+    if (tenantId) { conds.push(`tenant_id = $${params.length + 1}`); params.push(tenantId); }
+    if (userId)   { conds.push(`created_by = $${params.length + 1}`); params.push(userId); }
   }
 
-  const { data, error } = await query;
-  if (error) return { success: false, error: error.message };
-  return { success: true, data };
+  if (conds.length) sql += ' WHERE ' + conds.join(' AND ');
+  sql += ' ORDER BY created_at DESC';
+
+  try {
+    const { rows } = await pool.query(sql, params);
+    return { success: true, data: rows };
+  } catch (err: unknown) {
+    return { success: false, error: (err as Error).message };
+  }
 }
 
-/* ── Desconectar ───────────────────────────────────────────────────── */
 export async function disconnectInstanceService(
   instanceName:   string,
   tenantId?:      string,
@@ -215,30 +192,32 @@ export async function disconnectInstanceService(
   const result = await callDisconnect(token, overrideUrl);
 
   if (result.success) {
-    let upd = supabaseAdmin.from('instances').update({ status: 'inactive' }).eq('instance_name', instanceName);
+    let sql = `UPDATE public.instances SET status = 'inactive' WHERE instance_name = $1`;
+    const params: unknown[] = [instanceName];
     if (!isAdmin) {
-      if (tenantId) upd = upd.eq('tenant_id', tenantId);
-      if (userId)   upd = upd.eq('created_by', userId);
+      if (tenantId) { sql += ` AND tenant_id = $${params.length + 1}`; params.push(tenantId); }
+      if (userId)   { sql += ` AND created_by = $${params.length + 1}`; params.push(userId); }
     }
-    await upd;
+    await pool.query(sql, params);
 
-    let q = supabaseAdmin.from('instances').select('id').eq('instance_name', instanceName);
+    let qSql = `SELECT id FROM public.instances WHERE instance_name = $1`;
+    const qParams: unknown[] = [instanceName];
     if (!isAdmin) {
-      if (tenantId) q = q.eq('tenant_id', tenantId);
-      if (userId)   q = q.eq('created_by', userId);
+      if (tenantId) { qSql += ` AND tenant_id = $${qParams.length + 1}`; qParams.push(tenantId); }
+      if (userId)   { qSql += ` AND created_by = $${qParams.length + 1}`; qParams.push(userId); }
     }
-    const { data: inst } = await q.maybeSingle();
-    if (inst?.id) {
-      await supabaseAdmin.from('instance_logs').insert({
-        instance_id: inst.id, event: 'disconnected', payload: result.data as object ?? {},
-      });
+    const { rows } = await pool.query(qSql + ' LIMIT 1', qParams);
+    if (rows[0]?.id) {
+      await pool.query(
+        `INSERT INTO public.instance_logs (instance_id, event, payload) VALUES ($1, 'disconnected', $2)`,
+        [rows[0].id, JSON.stringify(result.data ?? {})]
+      );
     }
   }
 
   return { success: result.success, data: result.data, error: result.error };
 }
 
-/* ── Logout ────────────────────────────────────────────────────────── */
 export async function logoutInstanceService(
   instanceName:   string,
   tenantId?:      string,
@@ -257,34 +236,32 @@ export async function logoutInstanceService(
   const result = await callLogout(token, overrideUrl);
 
   if (result.success) {
-    let upd = supabaseAdmin.from('instances').update({ status: 'inactive' }).eq('instance_name', instanceName);
+    let sql = `UPDATE public.instances SET status = 'inactive' WHERE instance_name = $1`;
+    const params: unknown[] = [instanceName];
     if (!isAdmin) {
-      if (tenantId) upd = upd.eq('tenant_id', tenantId);
-      if (userId)   upd = upd.eq('created_by', userId);
+      if (tenantId) { sql += ` AND tenant_id = $${params.length + 1}`; params.push(tenantId); }
+      if (userId)   { sql += ` AND created_by = $${params.length + 1}`; params.push(userId); }
     }
-    await upd;
+    await pool.query(sql, params);
 
-    let q = supabaseAdmin.from('instances').select('id').eq('instance_name', instanceName);
+    let qSql = `SELECT id FROM public.instances WHERE instance_name = $1`;
+    const qParams: unknown[] = [instanceName];
     if (!isAdmin) {
-      if (tenantId) q = q.eq('tenant_id', tenantId);
-      if (userId)   q = q.eq('created_by', userId);
+      if (tenantId) { qSql += ` AND tenant_id = $${qParams.length + 1}`; qParams.push(tenantId); }
+      if (userId)   { qSql += ` AND created_by = $${qParams.length + 1}`; qParams.push(userId); }
     }
-    const { data: inst } = await q.maybeSingle();
-    if (inst?.id) {
-      await supabaseAdmin.from('instance_logs').insert({
-        instance_id: inst.id, event: 'logout', payload: result.data as object ?? {},
-      });
+    const { rows } = await pool.query(qSql + ' LIMIT 1', qParams);
+    if (rows[0]?.id) {
+      await pool.query(
+        `INSERT INTO public.instance_logs (instance_id, event, payload) VALUES ($1, 'logout', $2)`,
+        [rows[0].id, JSON.stringify(result.data ?? {})]
+      );
     }
   }
 
   return { success: result.success, data: result.data, error: result.error };
 }
 
-/* ── Deletar ──────────────────────────────────────────────────────────
-   - Sem UUID: registro órfão → deletar do banco diretamente.
-   - Com UUID: chamar API → só limpar banco após confirmação.
-   - Controle de acesso: admin pode deletar qualquer; usuário só o que criou.
-*/
 export async function deleteInstanceService(
   instanceName: string,
   tenantId?:    string,
@@ -301,21 +278,23 @@ export async function deleteInstanceService(
 
   if (!meta.uuid) {
     console.warn(`[deleteInstanceService] UUID não encontrado para "${instanceName}" — removendo registro órfão.`);
-    let q = supabaseAdmin.from('instances').select('id').eq('instance_name', instanceName);
+    let qSql = `SELECT id FROM public.instances WHERE instance_name = $1`;
+    const qParams: unknown[] = [instanceName];
     if (!isAdmin) {
-      if (tenantId) q = q.eq('tenant_id', tenantId);
-      if (userId)   q = q.eq('created_by', userId);
+      if (tenantId) { qSql += ` AND tenant_id = $${qParams.length + 1}`; qParams.push(tenantId); }
+      if (userId)   { qSql += ` AND created_by = $${qParams.length + 1}`; qParams.push(userId); }
     }
-    const { data: inst } = await q.maybeSingle();
-    if (inst?.id) {
-      await supabaseAdmin.from('instance_logs').delete().eq('instance_id', inst.id);
+    const { rows } = await pool.query(qSql + ' LIMIT 1', qParams);
+    if (rows[0]?.id) {
+      await pool.query(`DELETE FROM public.instance_logs WHERE instance_id = $1`, [rows[0].id]);
     }
-    let del = supabaseAdmin.from('instances').delete().eq('instance_name', instanceName);
+    let delSql = `DELETE FROM public.instances WHERE instance_name = $1`;
+    const delParams: unknown[] = [instanceName];
     if (!isAdmin) {
-      if (tenantId) del = del.eq('tenant_id', tenantId);
-      if (userId)   del = del.eq('created_by', userId);
+      if (tenantId) { delSql += ` AND tenant_id = $${delParams.length + 1}`; delParams.push(tenantId); }
+      if (userId)   { delSql += ` AND created_by = $${delParams.length + 1}`; delParams.push(userId); }
     }
-    await del;
+    await pool.query(delSql, delParams);
     return { success: true, data: { message: 'Registro órfão removido do banco local.' }, orphan: true };
   }
 
@@ -323,7 +302,6 @@ export async function deleteInstanceService(
   const apiOk = result.success || result.httpStatus === 404;
 
   if (!apiOk) {
-    console.error(`[deleteInstanceService] API recusou deleção de "${instanceName}": HTTP ${result.httpStatus}`);
     return {
       success:    false,
       error:      result.error || `A API retornou HTTP ${result.httpStatus}.`,
@@ -331,90 +309,76 @@ export async function deleteInstanceService(
     };
   }
 
-  let q = supabaseAdmin.from('instances').select('id').eq('instance_name', instanceName);
+  let qSql = `SELECT id FROM public.instances WHERE instance_name = $1`;
+  const qParams: unknown[] = [instanceName];
   if (!isAdmin) {
-    if (tenantId) q = q.eq('tenant_id', tenantId);
-    if (userId)   q = q.eq('created_by', userId);
+    if (tenantId) { qSql += ` AND tenant_id = $${qParams.length + 1}`; qParams.push(tenantId); }
+    if (userId)   { qSql += ` AND created_by = $${qParams.length + 1}`; qParams.push(userId); }
   }
-  const { data: inst } = await q.maybeSingle();
-  if (inst?.id) {
-    await supabaseAdmin.from('instance_logs').delete().eq('instance_id', inst.id);
+  const { rows } = await pool.query(qSql + ' LIMIT 1', qParams);
+  if (rows[0]?.id) {
+    await pool.query(`DELETE FROM public.instance_logs WHERE instance_id = $1`, [rows[0].id]);
   }
 
-  let del = supabaseAdmin.from('instances').delete().eq('instance_name', instanceName);
+  let delSql = `DELETE FROM public.instances WHERE instance_name = $1`;
+  const delParams: unknown[] = [instanceName];
   if (!isAdmin) {
-    if (tenantId) del = del.eq('tenant_id', tenantId);
-    if (userId)   del = del.eq('created_by', userId);
+    if (tenantId) { delSql += ` AND tenant_id = $${delParams.length + 1}`; delParams.push(tenantId); }
+    if (userId)   { delSql += ` AND created_by = $${delParams.length + 1}`; delParams.push(userId); }
   }
-  await del;
+  await pool.query(delSql, delParams);
 
   return { success: true, data: result.data };
 }
 
-/* ── Force Delete (admin) — remove do banco ignorando a API ──────────
-   Usado quando a API recusa o delete mas o registro precisa ser removido.
-   Exclusivo para admins — não aplica filtro de tenant/usuário.
-*/
 export async function forceDeleteInstance(instanceName: string) {
-  const { data: inst } = await supabaseAdmin
-    .from('instances')
-    .select('id')
-    .eq('instance_name', instanceName)
-    .maybeSingle();
+  const { rows } = await pool.query(
+    `SELECT id FROM public.instances WHERE instance_name = $1 LIMIT 1`,
+    [instanceName]
+  );
 
-  if (!inst) {
+  if (!rows.length) {
     return { success: false, error: `Instância "${instanceName}" não encontrada.` };
   }
 
-  if (inst.id) {
-    await supabaseAdmin.from('instance_logs').delete().eq('instance_id', inst.id);
+  if (rows[0]?.id) {
+    await pool.query(`DELETE FROM public.instance_logs WHERE instance_id = $1`, [rows[0].id]);
   }
 
-  const { error: delErr } = await supabaseAdmin
-    .from('instances')
-    .delete()
-    .eq('instance_name', instanceName);
-
-  if (delErr) return { success: false, error: delErr.message };
+  await pool.query(`DELETE FROM public.instances WHERE instance_name = $1`, [instanceName]);
 
   console.log(`[forceDeleteInstance] ✅ "${instanceName}" removido do banco (force).`);
   return { success: true, data: { message: `Instância "${instanceName}" removida forçadamente do banco.` } };
 }
 
-/* ── Purgar registro órfão ─────────────────────────────────────────── */
 export async function purgeOrphanedInstance(
   instanceName: string,
   tenantId?:    string,
   isAdmin?:     boolean,
   userId?:      string,
 ) {
-  let query = supabaseAdmin
-    .from('instances')
-    .select('id, instance_name, status')
-    .eq('instance_name', instanceName);
+  let sql = `SELECT id, instance_name, status FROM public.instances WHERE instance_name = $1`;
+  const params: unknown[] = [instanceName];
 
   if (!isAdmin) {
-    if (tenantId) query = query.eq('tenant_id', tenantId);
-    if (userId)   query = query.eq('created_by', userId);
+    if (tenantId) { sql += ` AND tenant_id = $${params.length + 1}`; params.push(tenantId); }
+    if (userId)   { sql += ` AND created_by = $${params.length + 1}`; params.push(userId); }
   }
 
-  const { data: inst, error } = await query.maybeSingle();
+  const { rows } = await pool.query(sql + ' LIMIT 1', params);
+  if (!rows.length) return { success: false, error: `Instância "${instanceName}" não encontrada ou sem permissão.` };
 
-  if (error) return { success: false, error: error.message };
-  if (!inst) return { success: false, error: `Instância "${instanceName}" não encontrada ou sem permissão.` };
-
-  if (inst.id) {
-    await supabaseAdmin.from('instance_logs').delete().eq('instance_id', inst.id);
+  if (rows[0]?.id) {
+    await pool.query(`DELETE FROM public.instance_logs WHERE instance_id = $1`, [rows[0].id]);
   }
 
-  let del = supabaseAdmin.from('instances').delete().eq('instance_name', instanceName);
+  let delSql = `DELETE FROM public.instances WHERE instance_name = $1`;
+  const delParams: unknown[] = [instanceName];
   if (!isAdmin) {
-    if (tenantId) del = del.eq('tenant_id', tenantId);
-    if (userId)   del = del.eq('created_by', userId);
+    if (tenantId) { delSql += ` AND tenant_id = $${delParams.length + 1}`; delParams.push(tenantId); }
+    if (userId)   { delSql += ` AND created_by = $${delParams.length + 1}`; delParams.push(userId); }
   }
-  const { error: delErr } = await del;
-
-  if (delErr) return { success: false, error: delErr.message };
+  await pool.query(delSql, delParams);
 
   console.log(`[purgeOrphanedInstance] ✅ "${instanceName}" removido do banco local.`);
   return { success: true, data: { message: `Instância "${instanceName}" removida do banco local.` } };
