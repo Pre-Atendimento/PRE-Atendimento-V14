@@ -1,8 +1,8 @@
 /**
  * load-env.js
- * Ensures DATABASE_URL is available for pg connections.
- * DATABASE_URL is automatically provided by Replit's PostgreSQL integration.
+ * Este arquivo deve ser o PRIMEIRO import em server.ts.
+ * Define DATABASE_URL a partir de SUPABASE_DB_URL (Supabase Pooler).
  */
-if (!process.env.DATABASE_URL && process.env.SUPABASE_DB_URL) {
+if (process.env.SUPABASE_DB_URL) {
   process.env.DATABASE_URL = process.env.SUPABASE_DB_URL;
 }

@@ -42,6 +42,7 @@ integrations = ["javascript_database:1.0.0"]
 [userenv.shared]
 VITE_API_URL = ""
 PORT = "5000"
+SUPABASE_URL = "https://yikemdxcswfvmwdvykiw.supabase.co"
 
 [userenv.development]
 VITE_API_URL = "/api"

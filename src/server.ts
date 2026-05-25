@@ -6,7 +6,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import jwt from 'jsonwebtoken';
 import { runMigrations } from './db/migrate.js';
-import pool from './db/pool.js';
+import { supabaseAdmin } from './services/supabase.js';
 import {
   createInstanceAndPersist,
   listInstances,
@@ -108,22 +108,26 @@ function sanitizeHeaderValue(s: string): string {
 
 /* ── Helper: resolve EvoAI CRM config from system_config ─────────── */
 async function getEvoCRMConfig(): Promise<{ url: string; token: string } | null> {
-  const { rows } = await pool.query(
-    `SELECT key, value FROM public.system_config WHERE key IN ('evo_crm_url', 'evo_crm_token')`
-  );
-  const url   = rows.find((r: { key: string; value: string }) => r.key === 'evo_crm_url')?.value?.trim()   || '';
-  const token = sanitizeHeaderValue(rows.find((r: { key: string; value: string }) => r.key === 'evo_crm_token')?.value || '');
+  const { data } = await supabaseAdmin
+    .from('system_config')
+    .select('key, value')
+    .in('key', ['evo_crm_url', 'evo_crm_token']);
+  const rows = (data as { key: string; value: string }[] | null) ?? [];
+  const url   = rows.find(r => r.key === 'evo_crm_url')?.value?.trim()   || '';
+  const token = sanitizeHeaderValue(rows.find(r => r.key === 'evo_crm_token')?.value || '');
   if (!url || !token) return null;
   return { url, token };
 }
 
 /* ── Helper: resolve EvoGo config from system_config ─────────────── */
 async function getEvoGoConfig(): Promise<{ url: string; key: string }> {
-  const { rows } = await pool.query(
-    `SELECT key, value FROM public.system_config WHERE key IN ('evogo_url', 'evogo_api_key')`
-  );
-  const url = rows.find((r: { key: string; value: string }) => r.key === 'evogo_url')?.value?.trim()     || '';
-  const key = rows.find((r: { key: string; value: string }) => r.key === 'evogo_api_key')?.value?.trim() || '';
+  const { data } = await supabaseAdmin
+    .from('system_config')
+    .select('key, value')
+    .in('key', ['evogo_url', 'evogo_api_key']);
+  const rows = (data as { key: string; value: string }[] | null) ?? [];
+  const url = rows.find(r => r.key === 'evogo_url')?.value?.trim()     || '';
+  const key = rows.find(r => r.key === 'evogo_api_key')?.value?.trim() || '';
   if (!url || !key) {
     throw new Error('EvoGo não configurado. Acesse Configuração → EvoGo.');
   }
@@ -231,8 +235,10 @@ app.get('/health', (_req, res) => {
 /* ── Setup: criar primeiro admin (só funciona quando não há usuários) ── */
 app.post('/api/setup', async (req, res) => {
   try {
-    const { rows: existing } = await pool.query('SELECT COUNT(*) FROM public.users');
-    if (parseInt(existing[0].count, 10) > 0) {
+    const { count } = await supabaseAdmin
+      .from('users')
+      .select('*', { count: 'exact', head: true });
+    if ((count ?? 0) > 0) {
       res.status(403).json({ success: false, error: 'Setup já realizado. Endpoint desativado.' });
       return;
     }
@@ -359,10 +365,12 @@ app.get('/api/auth/me', requireAuth, (req, res) => {
 /* ── Tenants ─────────────────────────────────────────────────────────── */
 app.get('/api/tenants', requireAuth, requireAdmin, async (_req, res) => {
   try {
-    const { rows } = await pool.query(
-      `SELECT id, name, slug, active, created_at FROM public.tenants ORDER BY created_at ASC`
-    );
-    res.json({ success: true, data: rows });
+    const { data, error } = await supabaseAdmin
+      .from('tenants')
+      .select('id, name, slug, active, created_at')
+      .order('created_at', { ascending: true });
+    if (error) throw error;
+    res.json({ success: true, data: data ?? [] });
   } catch (err: unknown) {
     res.status(500).json({ success: false, error: (err as Error).message });
   }
@@ -376,11 +384,13 @@ app.post('/api/tenants', requireAuth, requireAdmin, async (req, res) => {
   }
   try {
     const cleanSlug = slug.toLowerCase().replace(/[^a-z0-9-]/g, '-');
-    const { rows } = await pool.query(
-      `INSERT INTO public.tenants (name, slug) VALUES ($1, $2) RETURNING id, name, slug, active, created_at`,
-      [name, cleanSlug]
-    );
-    res.status(201).json({ success: true, data: rows[0] });
+    const { data, error } = await supabaseAdmin
+      .from('tenants')
+      .insert({ name, slug: cleanSlug })
+      .select('id, name, slug, active, created_at')
+      .single();
+    if (error) throw error;
+    res.status(201).json({ success: true, data });
   } catch (err: unknown) {
     res.status(409).json({ success: false, error: (err as Error).message });
   }
@@ -394,12 +404,15 @@ app.patch('/api/tenants/:id', requireAuth, requireAdmin, async (req, res) => {
     return;
   }
   try {
-    const { rows } = await pool.query(
-      `UPDATE public.tenants SET active = $1, updated_at = NOW() WHERE id = $2 RETURNING id, name, slug, active, created_at`,
-      [active, id]
-    );
-    if (!rows.length) { res.status(404).json({ success: false, error: 'Tenant não encontrado.' }); return; }
-    res.json({ success: true, data: rows[0] });
+    const { data, error } = await supabaseAdmin
+      .from('tenants')
+      .update({ active, updated_at: new Date().toISOString() })
+      .eq('id', id)
+      .select('id, name, slug, active, created_at')
+      .maybeSingle();
+    if (error) throw error;
+    if (!data) { res.status(404).json({ success: false, error: 'Tenant não encontrado.' }); return; }
+    res.json({ success: true, data });
   } catch (err: unknown) {
     res.status(500).json({ success: false, error: (err as Error).message });
   }
@@ -408,7 +421,8 @@ app.patch('/api/tenants/:id', requireAuth, requireAdmin, async (req, res) => {
 app.delete('/api/tenants/:id', requireAuth, requireAdmin, async (req, res) => {
   const { id } = req.params;
   try {
-    await pool.query(`DELETE FROM public.tenants WHERE id = $1`, [id]);
+    const { error } = await supabaseAdmin.from('tenants').delete().eq('id', id);
+    if (error) throw error;
     res.json({ success: true, data: { message: 'Tenant excluído com sucesso.' } });
   } catch (err: unknown) {
     res.status(500).json({ success: false, error: (err as Error).message });
@@ -418,18 +432,12 @@ app.delete('/api/tenants/:id', requireAuth, requireAdmin, async (req, res) => {
 /* ── Usuários (admin) ────────────────────────────────────────────────── */
 app.get('/api/users', requireAuth, requireAdmin, async (_req, res) => {
   try {
-    const { rows } = await pool.query(
-      `SELECT u.id, u.name, u.email, u.role, u.active, u.tenant_id, u.created_at, u.max_instances,
-              t.name AS tenant_name, t.slug AS tenant_slug
-       FROM public.users u
-       LEFT JOIN public.tenants t ON t.id = u.tenant_id
-       ORDER BY u.created_at ASC`
-    );
-    const data = rows.map((r: Record<string, unknown>) => ({
-      ...r,
-      tenants: r.tenant_name ? { name: r.tenant_name, slug: r.tenant_slug } : null,
-    }));
-    res.json({ success: true, data });
+    const { data, error } = await supabaseAdmin
+      .from('users')
+      .select('id, name, email, role, active, tenant_id, created_at, max_instances, tenants(name, slug)')
+      .order('created_at', { ascending: true });
+    if (error) throw error;
+    res.json({ success: true, data: data ?? [] });
   } catch (err: unknown) {
     res.status(500).json({ success: false, error: (err as Error).message });
   }
@@ -469,28 +477,28 @@ app.patch('/api/users/:id', requireAuth, requireAdmin, async (req, res) => {
     }
   }
 
-  const setClauses: string[] = ['updated_at = NOW()'];
-  const params: unknown[] = [];
+  const updates: Record<string, unknown> = { updated_at: new Date().toISOString() };
+  if (role !== undefined)         updates.role          = role;
+  if (name !== undefined)         updates.name          = name.trim();
+  if (active !== undefined)       updates.active        = active;
+  if (tenantId !== undefined)     updates.tenant_id     = tenantId ?? null;
+  if (maxInstances !== undefined) updates.max_instances = maxInstances ?? null;
 
-  if (role !== undefined)         { params.push(role);                   setClauses.push(`role = $${params.length}`); }
-  if (name !== undefined)         { params.push(name.trim());            setClauses.push(`name = $${params.length}`); }
-  if (active !== undefined)       { params.push(active);                 setClauses.push(`active = $${params.length}`); }
-  if (tenantId !== undefined)     { params.push(tenantId ?? null);       setClauses.push(`tenant_id = $${params.length}`); }
-  if (maxInstances !== undefined) { params.push(maxInstances ?? null);   setClauses.push(`max_instances = $${params.length}`); }
-
-  if (params.length === 0) {
+  if (Object.keys(updates).length === 1) {
     res.status(400).json({ success: false, error: 'Nenhum campo para atualizar.' });
     return;
   }
 
-  params.push(id);
   try {
-    const { rows } = await pool.query(
-      `UPDATE public.users SET ${setClauses.join(', ')} WHERE id = $${params.length} RETURNING id, name, email, role, active, tenant_id`,
-      params
-    );
-    if (!rows.length) { res.status(404).json({ success: false, error: 'Usuário não encontrado.' }); return; }
-    res.json({ success: true, data: rows[0] });
+    const { data, error } = await supabaseAdmin
+      .from('users')
+      .update(updates)
+      .eq('id', id)
+      .select('id, name, email, role, active, tenant_id')
+      .maybeSingle();
+    if (error) throw error;
+    if (!data) { res.status(404).json({ success: false, error: 'Usuário não encontrado.' }); return; }
+    res.json({ success: true, data });
   } catch (err: unknown) {
     res.status(500).json({ success: false, error: (err as Error).message });
   }
@@ -503,7 +511,8 @@ app.delete('/api/users/:id', requireAuth, requireAdmin, async (req, res) => {
     return;
   }
   try {
-    await pool.query(`DELETE FROM public.users WHERE id = $1`, [id]);
+    const { error } = await supabaseAdmin.from('users').delete().eq('id', id);
+    if (error) throw error;
     res.json({ success: true, data: { message: 'Usuário removido com sucesso.' } });
   } catch (err: unknown) {
     res.status(500).json({ success: false, error: (err as Error).message });
@@ -536,15 +545,18 @@ app.post('/api/instances', requireAuth, async (req, res) => {
   }
 
   if (user.role !== 'admin') {
-    const { rows: userRows } = await pool.query(
-      `SELECT max_instances FROM public.users WHERE id = $1 LIMIT 1`, [user.userId]
-    );
-    const limit = userRows[0]?.max_instances ?? null;
+    const { data: userRow } = await supabaseAdmin
+      .from('users')
+      .select('max_instances')
+      .eq('id', user.userId)
+      .maybeSingle();
+    const limit = (userRow as Record<string, unknown> | null)?.max_instances as number | null ?? null;
     if (limit !== null) {
-      const { rows: countRows } = await pool.query(
-        `SELECT COUNT(*) FROM public.instances WHERE created_by = $1`, [user.userId]
-      );
-      if (parseInt(countRows[0].count, 10) >= limit) {
+      const { count } = await supabaseAdmin
+        .from('instances')
+        .select('*', { count: 'exact', head: true })
+        .eq('created_by', user.userId);
+      if ((count ?? 0) >= limit) {
         res.status(403).json({ success: false, error: 'Limite de instâncias atingido. Peça ao administrador para aumentar seu limite.' });
         return;
       }
@@ -586,30 +598,33 @@ app.get('/api/instances', requireAuth, async (req, res) => {
   }
 });
 
+/* ── Helper local: buscar metadata de instância ─────────────────────── */
+async function fetchInstanceMeta(
+  name: string, user: JwtPayload, isAdmin: boolean,
+): Promise<Record<string, unknown> | null> {
+  let q = supabaseAdmin.from('instances').select('metadata').eq('instance_name', name);
+  if (!isAdmin) {
+    if (user.tenantId) q = q.eq('tenant_id', user.tenantId);
+    q = q.eq('created_by', user.userId);
+  }
+  const { data } = await q.maybeSingle();
+  if (!data) return null;
+  return (data as Record<string, unknown>).metadata as Record<string, unknown> || {};
+}
+
 /* ── QR Code ─────────────────────────────────────────────────────────── */
 app.get('/api/instances/:name/qr', requireAuth, async (req, res) => {
   const { name } = req.params;
   const user     = req.user!;
   const isAdmin  = user.role === 'admin';
-
   try {
-    let sql = `SELECT metadata FROM public.instances WHERE instance_name = $1`;
-    const params: unknown[] = [name];
-    if (!isAdmin) {
-      if (user.tenantId) { sql += ` AND tenant_id = $${params.length + 1}`; params.push(user.tenantId); }
-      sql += ` AND created_by = $${params.length + 1}`; params.push(user.userId);
-    }
-    const { rows } = await pool.query(sql + ' LIMIT 1', params);
-    if (!rows.length) { res.status(404).json({ success: false, error: 'Instância não encontrada.' }); return; }
-
-    const meta  = (rows[0].metadata as Record<string, unknown>) || {};
+    const meta = await fetchInstanceMeta(name, user, isAdmin);
+    if (!meta) { res.status(404).json({ success: false, error: 'Instância não encontrada.' }); return; }
     const token = extractInstanceToken(meta);
     if (!token) { res.status(400).json({ success: false, error: 'Token da instância não encontrado.' }); return; }
-
     let _evo: { url: string; key: string };
     try { _evo = await getEvoGoConfig(); }
     catch { res.status(400).json({ success: false, error: 'EvoGo não configurado.' }); return; }
-
     const result = await getQrCode(token, _evo.url);
     res.status(result.success ? 200 : (result.httpStatus || 502)).json(result);
   } catch (err: unknown) {
@@ -622,25 +637,14 @@ app.get('/api/instances/:name/status', requireAuth, async (req, res) => {
   const { name } = req.params;
   const user     = req.user!;
   const isAdmin  = user.role === 'admin';
-
   try {
-    let sql = `SELECT metadata FROM public.instances WHERE instance_name = $1`;
-    const params: unknown[] = [name];
-    if (!isAdmin) {
-      if (user.tenantId) { sql += ` AND tenant_id = $${params.length + 1}`; params.push(user.tenantId); }
-      sql += ` AND created_by = $${params.length + 1}`; params.push(user.userId);
-    }
-    const { rows } = await pool.query(sql + ' LIMIT 1', params);
-    if (!rows.length) { res.status(404).json({ success: false, error: 'Instância não encontrada.' }); return; }
-
-    const meta  = (rows[0].metadata as Record<string, unknown>) || {};
+    const meta = await fetchInstanceMeta(name, user, isAdmin);
+    if (!meta) { res.status(404).json({ success: false, error: 'Instância não encontrada.' }); return; }
     const token = extractInstanceToken(meta);
     if (!token) { res.status(400).json({ success: false, error: 'Token da instância não encontrado.' }); return; }
-
     let _evo: { url: string; key: string };
     try { _evo = await getEvoGoConfig(); }
     catch { res.status(400).json({ success: false, error: 'EvoGo não configurado.' }); return; }
-
     const result = await getInstanceStatus(token, _evo.url);
     res.status(result.success ? 200 : (result.httpStatus || 502)).json(result);
   } catch (err: unknown) {
@@ -657,25 +661,14 @@ app.post('/api/instances/:name/connect', requireAuth, async (req, res) => {
     webhookUrl?: string; subscribe?: string[]; rabbitmqEnable?: string;
     websocketEnable?: string; natsEnable?: string;
   };
-
   try {
-    let sql = `SELECT metadata FROM public.instances WHERE instance_name = $1`;
-    const params: unknown[] = [name];
-    if (!isAdmin) {
-      if (user.tenantId) { sql += ` AND tenant_id = $${params.length + 1}`; params.push(user.tenantId); }
-      sql += ` AND created_by = $${params.length + 1}`; params.push(user.userId);
-    }
-    const { rows } = await pool.query(sql + ' LIMIT 1', params);
-    if (!rows.length) { res.status(404).json({ success: false, error: 'Instância não encontrada.' }); return; }
-
-    const meta  = (rows[0].metadata as Record<string, unknown>) || {};
+    const meta = await fetchInstanceMeta(name, user, isAdmin);
+    if (!meta) { res.status(404).json({ success: false, error: 'Instância não encontrada.' }); return; }
     const token = extractInstanceToken(meta);
     if (!token) { res.status(400).json({ success: false, error: 'Token da instância não encontrado.' }); return; }
-
     let _evo: { url: string; key: string };
     try { _evo = await getEvoGoConfig(); }
     catch { res.status(400).json({ success: false, error: 'EvoGo não configurado.' }); return; }
-
     const result = await connectInstance(token, _evo.url, { webhookUrl, subscribe, rabbitmqEnable, websocketEnable, natsEnable });
     res.status(result.success ? 200 : (result.httpStatus || 502)).json(result);
   } catch (err: unknown) {
@@ -692,25 +685,14 @@ app.post('/api/instances/:name/reconnect', requireAuth, async (req, res) => {
     webhookUrl?: string; subscribe?: string[]; rabbitmqEnable?: string;
     websocketEnable?: string; natsEnable?: string;
   };
-
   try {
-    let sql = `SELECT metadata FROM public.instances WHERE instance_name = $1`;
-    const params: unknown[] = [name];
-    if (!isAdmin) {
-      if (user.tenantId) { sql += ` AND tenant_id = $${params.length + 1}`; params.push(user.tenantId); }
-      sql += ` AND created_by = $${params.length + 1}`; params.push(user.userId);
-    }
-    const { rows } = await pool.query(sql + ' LIMIT 1', params);
-    if (!rows.length) { res.status(404).json({ success: false, error: 'Instância não encontrada.' }); return; }
-
-    const meta  = (rows[0].metadata as Record<string, unknown>) || {};
+    const meta = await fetchInstanceMeta(name, user, isAdmin);
+    if (!meta) { res.status(404).json({ success: false, error: 'Instância não encontrada.' }); return; }
     const token = extractInstanceToken(meta);
     if (!token) { res.status(400).json({ success: false, error: 'Token da instância não encontrado.' }); return; }
-
     let _evo: { url: string; key: string };
     try { _evo = await getEvoGoConfig(); }
     catch { res.status(400).json({ success: false, error: 'EvoGo não configurado.' }); return; }
-
     const result = await reconnectInstance(token, _evo.url, { webhookUrl, subscribe, rabbitmqEnable, websocketEnable, natsEnable });
     res.status(result.success ? 200 : (result.httpStatus || 502)).json(result);
   } catch (err: unknown) {
@@ -827,23 +809,13 @@ app.post('/api/instances/:name/pair', requireAuth, async (req, res) => {
   if (!phone) { res.status(400).json({ success: false, error: 'Número de telefone é obrigatório.' }); return; }
 
   try {
-    let sql = `SELECT metadata FROM public.instances WHERE instance_name = $1`;
-    const params: unknown[] = [name];
-    if (!isAdmin) {
-      if (user.tenantId) { sql += ` AND tenant_id = $${params.length + 1}`; params.push(user.tenantId); }
-      sql += ` AND created_by = $${params.length + 1}`; params.push(user.userId);
-    }
-    const { rows } = await pool.query(sql + ' LIMIT 1', params);
-    if (!rows.length) { res.status(404).json({ success: false, error: 'Instância não encontrada.' }); return; }
-
-    const meta  = (rows[0].metadata as Record<string, unknown>) || {};
+    const meta = await fetchInstanceMeta(name, user, isAdmin);
+    if (!meta) { res.status(404).json({ success: false, error: 'Instância não encontrada.' }); return; }
     const token = extractInstanceToken(meta);
     if (!token) { res.status(400).json({ success: false, error: 'Token da instância não encontrado.' }); return; }
-
     let _evo: { url: string; key: string };
     try { _evo = await getEvoGoConfig(); }
     catch { res.status(400).json({ success: false, error: 'EvoGo não configurado.' }); return; }
-
     const result = await pairInstance(token, phone, subscribe, _evo.url);
     res.status(result.success ? 200 : (result.httpStatus || 502)).json(result);
   } catch (err: unknown) {
@@ -856,25 +828,14 @@ app.get('/api/instances/:name/profile-picture', requireAuth, async (req, res) =>
   const { name } = req.params;
   const user     = req.user!;
   const isAdmin  = user.role === 'admin';
-
   try {
-    let sql = `SELECT metadata FROM public.instances WHERE instance_name = $1`;
-    const params: unknown[] = [name];
-    if (!isAdmin) {
-      if (user.tenantId) { sql += ` AND tenant_id = $${params.length + 1}`; params.push(user.tenantId); }
-      sql += ` AND created_by = $${params.length + 1}`; params.push(user.userId);
-    }
-    const { rows } = await pool.query(sql + ' LIMIT 1', params);
-    if (!rows.length) { res.status(404).json({ success: false, error: 'Instância não encontrada.' }); return; }
-
-    const meta  = (rows[0].metadata as Record<string, unknown>) || {};
+    const meta = await fetchInstanceMeta(name, user, isAdmin);
+    if (!meta) { res.status(404).json({ success: false, error: 'Instância não encontrada.' }); return; }
     const token = extractInstanceToken(meta);
     if (!token) { res.status(400).json({ success: false, error: 'Token não encontrado.' }); return; }
-
     let _evo: { url: string; key: string };
     try { _evo = await getEvoGoConfig(); }
     catch { res.status(400).json({ success: false, error: 'EvoGo não configurado.' }); return; }
-
     const result = await getProfilePicture(token, _evo.url);
     res.status(result.success ? 200 : (result.httpStatus || 502)).json(result);
   } catch (err: unknown) {
@@ -892,28 +853,23 @@ app.post('/api/instances/:name/advanced', requireAuth, async (req, res) => {
     ignoreGroups?: boolean; ignoreStatus?: boolean;
   };
   try {
-    let sql = `SELECT metadata FROM public.instances WHERE instance_name = $1`;
-    const params: unknown[] = [name];
-    if (!isAdmin) {
-      if (user.tenantId) { sql += ` AND tenant_id = $${params.length + 1}`; params.push(user.tenantId); }
-      sql += ` AND created_by = $${params.length + 1}`; params.push(user.userId);
-    }
-    const { rows } = await pool.query(sql + ' LIMIT 1', params);
-    if (!rows.length) { res.status(404).json({ success: false, error: 'Instância não encontrada.' }); return; }
+    const meta = await fetchInstanceMeta(name, user, isAdmin);
+    if (!meta) { res.status(404).json({ success: false, error: 'Instância não encontrada.' }); return; }
 
-    const meta = ((rows[0].metadata as Record<string, unknown>) || {}) as Record<string, unknown>;
     meta.advanced = {
       alwaysOnline: !!alwaysOnline, rejectCall: !!rejectCall,
       readMessages: !!readMessages, ignoreGroups: !!ignoreGroups, ignoreStatus: !!ignoreStatus,
     };
 
-    let upSql = `UPDATE public.instances SET metadata = $1, updated_at = NOW() WHERE instance_name = $2`;
-    const upParams: unknown[] = [JSON.stringify(meta), name];
+    let upQ = supabaseAdmin
+      .from('instances')
+      .update({ metadata: meta, updated_at: new Date().toISOString() })
+      .eq('instance_name', name);
     if (!isAdmin) {
-      if (user.tenantId) { upSql += ` AND tenant_id = $${upParams.length + 1}`; upParams.push(user.tenantId); }
-      upSql += ` AND created_by = $${upParams.length + 1}`; upParams.push(user.userId);
+      if (user.tenantId) upQ = upQ.eq('tenant_id', user.tenantId);
+      upQ = upQ.eq('created_by', user.userId);
     }
-    await pool.query(upSql, upParams);
+    await upQ;
 
     const createData = (meta.create as Record<string, unknown>)?.data as Record<string, unknown> | undefined
                     || (meta.data as Record<string, unknown> | undefined);
@@ -950,23 +906,29 @@ app.patch('/api/instances/:name/owner', requireAuth, requireAdmin, async (req, r
   try {
     let owner: { id: string; name: string; email: string; role: string } | null = null;
     if (userId) {
-      const { rows } = await pool.query(
-        `SELECT id, name, email, role FROM public.users WHERE id = $1 LIMIT 1`, [userId]
-      );
-      if (!rows.length) { res.status(404).json({ success: false, error: 'Usuário não encontrado.' }); return; }
-      owner = rows[0];
+      const { data: u } = await supabaseAdmin
+        .from('users')
+        .select('id, name, email, role')
+        .eq('id', userId)
+        .maybeSingle();
+      if (!u) { res.status(404).json({ success: false, error: 'Usuário não encontrado.' }); return; }
+      owner = u as { id: string; name: string; email: string; role: string };
     }
 
-    const { rows } = await pool.query(
-      `UPDATE public.instances SET created_by = $1, updated_at = NOW() WHERE instance_name = $2
-       RETURNING id, instance_name, created_by, tenant_id`,
-      [userId || null, name]
-    );
-    if (!rows.length) { res.status(404).json({ success: false, error: 'Instância não encontrada.' }); return; }
+    const { data: inst } = await supabaseAdmin
+      .from('instances')
+      .update({ created_by: userId || null, updated_at: new Date().toISOString() })
+      .eq('instance_name', name)
+      .select('id, instance_name, created_by, tenant_id')
+      .maybeSingle();
+    if (!inst) { res.status(404).json({ success: false, error: 'Instância não encontrada.' }); return; }
 
     res.json({
       success: true,
-      data: { ...rows[0], owner: owner ? { id: owner.id, name: owner.name, email: owner.email, role: owner.role } : null },
+      data: {
+        ...(inst as Record<string, unknown>),
+        owner: owner ? { id: owner.id, name: owner.name, email: owner.email, role: owner.role } : null,
+      },
     });
   } catch (err: unknown) {
     res.status(500).json({ success: false, error: (err as Error).message });
@@ -994,11 +956,13 @@ app.post('/api/admin/test-connection', requireAuth, requireAdmin, async (req, re
 
   if (!baseUrl || !key) {
     try {
-      const { rows } = await pool.query(
-        `SELECT key, value FROM public.system_config WHERE key IN ('evogo_url', 'evogo_api_key')`
-      );
-      if (!baseUrl) baseUrl = rows.find((r: { key: string; value: string }) => r.key === 'evogo_url')?.value?.trim()     || '';
-      if (!key)     key     = rows.find((r: { key: string; value: string }) => r.key === 'evogo_api_key')?.value?.trim() || '';
+      const { data } = await supabaseAdmin
+        .from('system_config')
+        .select('key, value')
+        .in('key', ['evogo_url', 'evogo_api_key']);
+      const rows = (data as { key: string; value: string }[] | null) ?? [];
+      if (!baseUrl) baseUrl = rows.find(r => r.key === 'evogo_url')?.value?.trim()     || '';
+      if (!key)     key     = rows.find(r => r.key === 'evogo_api_key')?.value?.trim() || '';
     } catch { /* continue */ }
   }
 
@@ -1085,11 +1049,13 @@ app.get('/api/monitor', requireAuth, async (req, res) => {
 /* ── Admin: Ler config EvoGo ─────────────────────────────────────────── */
 app.get('/api/admin/config/evogo', requireAuth, requireAdmin, async (_req, res) => {
   try {
-    const { rows } = await pool.query(
-      `SELECT key, value FROM public.system_config WHERE key IN ('evogo_url', 'evogo_api_key')`
-    );
-    const url  = rows.find((r: { key: string; value: string }) => r.key === 'evogo_url')?.value?.trim()     || '';
-    const key  = rows.find((r: { key: string; value: string }) => r.key === 'evogo_api_key')?.value?.trim() || '';
+    const { data } = await supabaseAdmin
+      .from('system_config')
+      .select('key, value')
+      .in('key', ['evogo_url', 'evogo_api_key']);
+    const rows = (data as { key: string; value: string }[] | null) ?? [];
+    const url  = rows.find(r => r.key === 'evogo_url')?.value?.trim()     || '';
+    const key  = rows.find(r => r.key === 'evogo_api_key')?.value?.trim() || '';
     res.json({ success: true, url, keyConfigured: !!key });
   } catch (err: unknown) {
     res.status(500).json({ success: false, error: (err as Error).message });
@@ -1113,18 +1079,14 @@ app.post('/api/admin/config/evogo', requireAuth, requireAdmin, async (req, res) 
   try {
     const now = new Date().toISOString();
     if (cleanUrl) {
-      await pool.query(
-        `INSERT INTO public.system_config (key, value, updated_at) VALUES ('evogo_url', $1, $2)
-         ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = EXCLUDED.updated_at`,
-        [cleanUrl, now]
-      );
+      await supabaseAdmin
+        .from('system_config')
+        .upsert({ key: 'evogo_url', value: cleanUrl, updated_at: now }, { onConflict: 'key' });
     }
     if (cleanKey) {
-      await pool.query(
-        `INSERT INTO public.system_config (key, value, updated_at) VALUES ('evogo_api_key', $1, $2)
-         ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = EXCLUDED.updated_at`,
-        [cleanKey, now]
-      );
+      await supabaseAdmin
+        .from('system_config')
+        .upsert({ key: 'evogo_api_key', value: cleanKey, updated_at: now }, { onConflict: 'key' });
     }
     res.json({ success: true });
   } catch (err: unknown) {
@@ -1138,17 +1100,17 @@ app.get('/api/catalog/collections', requireAuth, async (req, res) => {
   const user    = req.user!;
   const isAdmin = user.role === 'admin';
   try {
-    let sql = `SELECT id, name, description, created_at FROM public.catalog_collections`;
-    const params: unknown[] = [];
-    const conds: string[] = [];
+    let q = supabaseAdmin
+      .from('catalog_collections')
+      .select('id, name, description, created_at')
+      .order('created_at', { ascending: true });
     if (!isAdmin) {
-      if (user.tenantId) { conds.push(`tenant_id = $${params.length + 1}`); params.push(user.tenantId); }
-      conds.push(`created_by = $${params.length + 1}`); params.push(user.userId);
+      if (user.tenantId) q = q.eq('tenant_id', user.tenantId);
+      q = q.eq('created_by', user.userId);
     }
-    if (conds.length) sql += ' WHERE ' + conds.join(' AND ');
-    sql += ' ORDER BY created_at ASC';
-    const { rows } = await pool.query(sql, params);
-    res.json({ success: true, data: rows });
+    const { data, error } = await q;
+    if (error) throw error;
+    res.json({ success: true, data: data ?? [] });
   } catch (err: unknown) {
     res.status(500).json({ success: false, error: (err as Error).message });
   }
@@ -1159,12 +1121,18 @@ app.post('/api/catalog/collections', requireAuth, async (req, res) => {
   if (!name?.trim()) { res.status(400).json({ success: false, error: 'Nome é obrigatório.' }); return; }
   const user = req.user!;
   try {
-    const { rows } = await pool.query(
-      `INSERT INTO public.catalog_collections (name, description, tenant_id, created_by)
-       VALUES ($1, $2, $3, $4) RETURNING id, name, description, created_at`,
-      [name.trim(), description?.trim() || null, user.tenantId || null, user.userId]
-    );
-    res.status(201).json({ success: true, data: rows[0] });
+    const { data, error } = await supabaseAdmin
+      .from('catalog_collections')
+      .insert({
+        name:        name.trim(),
+        description: description?.trim() || null,
+        tenant_id:   user.tenantId || null,
+        created_by:  user.userId,
+      })
+      .select('id, name, description, created_at')
+      .single();
+    if (error) throw error;
+    res.status(201).json({ success: true, data });
   } catch (err: unknown) {
     res.status(409).json({ success: false, error: (err as Error).message });
   }
@@ -1175,10 +1143,10 @@ app.delete('/api/catalog/collections/:id', requireAuth, async (req, res) => {
   const user    = req.user!;
   const isAdmin = user.role === 'admin';
   try {
-    let sql = `DELETE FROM public.catalog_collections WHERE id = $1`;
-    const params: unknown[] = [id];
-    if (!isAdmin) { sql += ` AND created_by = $${params.length + 1}`; params.push(user.userId); }
-    await pool.query(sql, params);
+    let q = supabaseAdmin.from('catalog_collections').delete().eq('id', id);
+    if (!isAdmin) q = q.eq('created_by', user.userId);
+    const { error } = await q;
+    if (error) throw error;
     res.json({ success: true });
   } catch (err: unknown) {
     res.status(404).json({ success: false, error: (err as Error).message });
@@ -1189,25 +1157,17 @@ app.get('/api/catalog/items', requireAuth, async (req, res) => {
   const user    = req.user!;
   const isAdmin = user.role === 'admin';
   try {
-    let sql = `SELECT ci.id, ci.name, ci.description, ci.price, ci.currency, ci.image_url,
-                      ci.availability, ci.meta_product_id, ci.collection_id, ci.created_at,
-                      cc.name AS collection_name
-               FROM public.catalog_items ci
-               LEFT JOIN public.catalog_collections cc ON cc.id = ci.collection_id`;
-    const params: unknown[] = [];
-    const conds: string[] = [];
+    let q = supabaseAdmin
+      .from('catalog_items')
+      .select('id, name, description, price, currency, image_url, availability, meta_product_id, collection_id, created_at, catalog_collections(name)')
+      .order('created_at', { ascending: true });
     if (!isAdmin) {
-      if (user.tenantId) { conds.push(`ci.tenant_id = $${params.length + 1}`); params.push(user.tenantId); }
-      conds.push(`ci.created_by = $${params.length + 1}`); params.push(user.userId);
+      if (user.tenantId) q = q.eq('tenant_id', user.tenantId);
+      q = q.eq('created_by', user.userId);
     }
-    if (conds.length) sql += ' WHERE ' + conds.join(' AND ');
-    sql += ' ORDER BY ci.created_at ASC';
-    const { rows } = await pool.query(sql, params);
-    const data = rows.map((r: Record<string, unknown>) => ({
-      ...r,
-      catalog_collections: r.collection_name ? { name: r.collection_name } : null,
-    }));
-    res.json({ success: true, data });
+    const { data, error } = await q;
+    if (error) throw error;
+    res.json({ success: true, data: data ?? [] });
   } catch (err: unknown) {
     res.status(500).json({ success: false, error: (err as Error).message });
   }
@@ -1220,13 +1180,20 @@ app.post('/api/catalog/items', requireAuth, async (req, res) => {
   if (!name?.trim()) { res.status(400).json({ success: false, error: 'Nome é obrigatório.' }); return; }
   const user = req.user!;
   try {
-    const { rows } = await pool.query(
-      `INSERT INTO public.catalog_items (name, description, price, collection_id, tenant_id, created_by)
-       VALUES ($1, $2, $3, $4, $5, $6)
-       RETURNING id, name, description, price, collection_id, created_at`,
-      [name.trim(), description?.trim() || null, price ?? null, collection_id || null, user.tenantId || null, user.userId]
-    );
-    res.status(201).json({ success: true, data: rows[0] });
+    const { data, error } = await supabaseAdmin
+      .from('catalog_items')
+      .insert({
+        name:          name.trim(),
+        description:   description?.trim() || null,
+        price:         price ?? null,
+        collection_id: collection_id || null,
+        tenant_id:     user.tenantId || null,
+        created_by:    user.userId,
+      })
+      .select('id, name, description, price, collection_id, created_at')
+      .single();
+    if (error) throw error;
+    res.status(201).json({ success: true, data });
   } catch (err: unknown) {
     res.status(409).json({ success: false, error: (err as Error).message });
   }
@@ -1245,20 +1212,34 @@ app.put('/api/catalog/items/:id', requireAuth, async (req, res) => {
     res.status(400).json({ success: false, error: 'Preço inválido.' }); return;
   }
   try {
-    let fetchSql = `SELECT id, meta_product_id FROM public.catalog_items WHERE id = $1`;
-    const fetchParams: unknown[] = [id];
-    if (!isAdmin) { fetchSql += ` AND created_by = $${fetchParams.length + 1}`; fetchParams.push(user.userId); }
-    const { rows: existing } = await pool.query(fetchSql + ' LIMIT 1', fetchParams);
+    let fetchQ = supabaseAdmin
+      .from('catalog_items')
+      .select('id, meta_product_id')
+      .eq('id', id);
+    if (!isAdmin) fetchQ = fetchQ.eq('created_by', user.userId);
+    const { data: existing } = await fetchQ.maybeSingle();
 
-    let upSql = `UPDATE public.catalog_items SET name=$1, description=$2, price=$3, availability=$4, image_url=$5, collection_id=$6, updated_at=NOW() WHERE id=$7`;
-    const upParams: unknown[] = [name.trim(), description?.trim() || null, price ?? null, availability || 'in stock', image_url?.trim() || null, collection_id || null, id];
-    if (!isAdmin) { upSql += ` AND created_by = $${upParams.length + 1}`; upParams.push(user.userId); }
-    const { rows } = await pool.query(upSql + ' RETURNING id, name, description, price, availability, image_url, collection_id, meta_product_id', upParams);
-    if (!rows.length) { res.status(404).json({ success: false, error: 'Item não encontrado.' }); return; }
+    let upQ = supabaseAdmin
+      .from('catalog_items')
+      .update({
+        name:          name.trim(),
+        description:   description?.trim() || null,
+        price:         price ?? null,
+        availability:  availability || 'in stock',
+        image_url:     image_url?.trim() || null,
+        collection_id: collection_id || null,
+        updated_at:    new Date().toISOString(),
+      })
+      .eq('id', id);
+    if (!isAdmin) upQ = upQ.eq('created_by', user.userId);
+    const { data: updated } = await upQ
+      .select('id, name, description, price, availability, image_url, collection_id, meta_product_id')
+      .maybeSingle();
+    if (!updated) { res.status(404).json({ success: false, error: 'Item não encontrado.' }); return; }
 
     let crmSynced  = false;
     let crmWarning: string | undefined;
-    const crmId    = existing[0]?.meta_product_id;
+    const crmId    = (existing as Record<string, unknown> | null)?.meta_product_id;
     if (crmId) {
       const crmCfg = await getEvoCRMConfig();
       if (crmCfg) {
@@ -1274,7 +1255,7 @@ app.put('/api/catalog/items/:id', requireAuth, async (req, res) => {
       }
     }
 
-    res.json({ success: true, data: rows[0], crm_synced: crmSynced, ...(crmWarning ? { warning: crmWarning } : {}) });
+    res.json({ success: true, data: updated, crm_synced: crmSynced, ...(crmWarning ? { warning: crmWarning } : {}) });
   } catch (err: unknown) {
     res.status(500).json({ success: false, error: (err as Error).message });
   }
@@ -1285,19 +1266,18 @@ app.delete('/api/catalog/items/:id', requireAuth, async (req, res) => {
   const user    = req.user!;
   const isAdmin = user.role === 'admin';
   try {
-    let fetchSql = `SELECT id, meta_product_id FROM public.catalog_items WHERE id = $1`;
-    const fetchParams: unknown[] = [id];
-    if (!isAdmin) { fetchSql += ` AND created_by = $${fetchParams.length + 1}`; fetchParams.push(user.userId); }
-    const { rows: existing } = await pool.query(fetchSql + ' LIMIT 1', fetchParams);
+    let fetchQ = supabaseAdmin.from('catalog_items').select('id, meta_product_id').eq('id', id);
+    if (!isAdmin) fetchQ = fetchQ.eq('created_by', user.userId);
+    const { data: existing } = await fetchQ.maybeSingle();
 
-    let delSql = `DELETE FROM public.catalog_items WHERE id = $1`;
-    const delParams: unknown[] = [id];
-    if (!isAdmin) { delSql += ` AND created_by = $${delParams.length + 1}`; delParams.push(user.userId); }
-    await pool.query(delSql, delParams);
+    let delQ = supabaseAdmin.from('catalog_items').delete().eq('id', id);
+    if (!isAdmin) delQ = delQ.eq('created_by', user.userId);
+    const { error } = await delQ;
+    if (error) throw error;
 
     let crmDeleted = false;
     let crmWarning: string | undefined;
-    const crmId = existing[0]?.meta_product_id;
+    const crmId = (existing as Record<string, unknown> | null)?.meta_product_id;
     if (crmId) {
       const crmCfg = await getEvoCRMConfig();
       if (crmCfg) {
@@ -1319,11 +1299,13 @@ app.delete('/api/catalog/items/:id', requireAuth, async (req, res) => {
 
 app.get('/api/admin/config/evo-crm', requireAuth, requireAdmin, async (_req, res) => {
   try {
-    const { rows } = await pool.query(
-      `SELECT key, value FROM public.system_config WHERE key IN ('evo_crm_url', 'evo_crm_token')`
-    );
-    const url   = rows.find((r: { key: string; value: string }) => r.key === 'evo_crm_url')?.value?.trim()   || '';
-    const token = rows.find((r: { key: string; value: string }) => r.key === 'evo_crm_token')?.value?.trim() || '';
+    const { data } = await supabaseAdmin
+      .from('system_config')
+      .select('key, value')
+      .in('key', ['evo_crm_url', 'evo_crm_token']);
+    const rows  = (data as { key: string; value: string }[] | null) ?? [];
+    const url   = rows.find(r => r.key === 'evo_crm_url')?.value?.trim()   || '';
+    const token = rows.find(r => r.key === 'evo_crm_token')?.value?.trim() || '';
     res.json({ success: true, url, configured: !!(url && token), tokenConfigured: !!token });
   } catch (err: unknown) {
     res.status(500).json({ success: false, error: (err as Error).message });
@@ -1340,20 +1322,20 @@ app.post('/api/admin/config/evo-crm', requireAuth, requireAdmin, async (req, res
   }
   try {
     const now = new Date().toISOString();
-    await pool.query(
-      `INSERT INTO public.system_config (key, value, updated_at) VALUES ('evo_crm_url', $1, $2)
-       ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = EXCLUDED.updated_at`,
-      [cleanUrl, now]
-    );
+    await supabaseAdmin
+      .from('system_config')
+      .upsert({ key: 'evo_crm_url', value: cleanUrl, updated_at: now }, { onConflict: 'key' });
     if (cleanToken) {
-      await pool.query(
-        `INSERT INTO public.system_config (key, value, updated_at) VALUES ('evo_crm_token', $1, $2)
-         ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = EXCLUDED.updated_at`,
-        [cleanToken, now]
-      );
+      await supabaseAdmin
+        .from('system_config')
+        .upsert({ key: 'evo_crm_token', value: cleanToken, updated_at: now }, { onConflict: 'key' });
     } else {
-      const { rows } = await pool.query(`SELECT value FROM public.system_config WHERE key = 'evo_crm_token' LIMIT 1`);
-      if (!rows[0]?.value) {
+      const { data } = await supabaseAdmin
+        .from('system_config')
+        .select('value')
+        .eq('key', 'evo_crm_token')
+        .maybeSingle();
+      if (!(data as Record<string, unknown> | null)?.value) {
         res.status(400).json({ success: false, error: 'API Token é obrigatório na primeira configuração.' }); return;
       }
     }
@@ -1369,8 +1351,12 @@ app.post('/api/admin/crm/test-token', requireAuth, requireAdmin, async (req, res
   let   cleanToken = sanitizeHeaderValue(token || '');
   if (!cleanUrl) { res.status(400).json({ success: false, error: 'URL é obrigatória para o teste.' }); return; }
   if (!cleanToken) {
-    const { rows } = await pool.query(`SELECT value FROM public.system_config WHERE key = 'evo_crm_token' LIMIT 1`);
-    cleanToken = sanitizeHeaderValue(rows[0]?.value || '');
+    const { data } = await supabaseAdmin
+      .from('system_config')
+      .select('value')
+      .eq('key', 'evo_crm_token')
+      .maybeSingle();
+    cleanToken = sanitizeHeaderValue((data as Record<string, unknown> | null)?.value as string || '');
     if (!cleanToken) { res.status(400).json({ success: false, error: 'Token não encontrado.' }); return; }
   }
   try { new URL(cleanUrl); } catch { res.status(400).json({ success: false, error: 'URL inválida.' }); return; }
@@ -1491,17 +1477,19 @@ app.post('/api/admin/crm/products/:productId/variants', requireAuth, requireAdmi
 app.get('/api/meta-config', requireAuth, requireAdmin, async (req, res) => {
   const user = req.user!;
   try {
-    let sql = `SELECT id, meta_access_token, meta_business_id, meta_catalog_id, meta_waba_id, updated_at
-               FROM public.tenant_meta_config WHERE user_id = $1`;
-    const params: unknown[] = [user.userId];
-    if (user.tenantId) { sql += ` AND tenant_id = $${params.length + 1}`; params.push(user.tenantId); }
-    const { rows } = await pool.query(sql + ' LIMIT 1', params);
-    const data = rows[0] || null;
+    let q = supabaseAdmin
+      .from('tenant_meta_config')
+      .select('id, meta_access_token, meta_business_id, meta_catalog_id, meta_waba_id, updated_at')
+      .eq('user_id', user.userId);
+    if (user.tenantId) q = q.eq('tenant_id', user.tenantId);
+    const { data } = await q.maybeSingle();
     const masked = data ? {
-      ...data,
-      meta_access_token: data.meta_access_token ? '••••••••' + data.meta_access_token.slice(-4) : '',
+      ...(data as Record<string, unknown>),
+      meta_access_token: (data as Record<string, unknown>).meta_access_token
+        ? '••••••••' + ((data as Record<string, unknown>).meta_access_token as string).slice(-4)
+        : '',
     } : null;
-    res.json({ success: true, data: masked, configured: !!(data?.meta_catalog_id) });
+    res.json({ success: true, data: masked, configured: !!(data && (data as Record<string, unknown>).meta_catalog_id) });
   } catch (err: unknown) {
     res.status(500).json({ success: false, error: (err as Error).message });
   }
@@ -1517,19 +1505,21 @@ app.post('/api/meta-config', requireAuth, requireAdmin, async (req, res) => {
     res.status(400).json({ success: false, error: 'META_ACCESS_TOKEN e META_CATALOG_ID são obrigatórios.' }); return;
   }
   try {
-    const { rows } = await pool.query(
-      `INSERT INTO public.tenant_meta_config (tenant_id, user_id, meta_access_token, meta_business_id, meta_catalog_id, meta_waba_id, updated_at)
-       VALUES ($1, $2, $3, $4, $5, $6, NOW())
-       ON CONFLICT (tenant_id, user_id) DO UPDATE SET
-         meta_access_token = EXCLUDED.meta_access_token,
-         meta_business_id  = EXCLUDED.meta_business_id,
-         meta_catalog_id   = EXCLUDED.meta_catalog_id,
-         meta_waba_id      = EXCLUDED.meta_waba_id,
-         updated_at        = NOW()
-       RETURNING id, meta_business_id, meta_catalog_id, meta_waba_id, updated_at`,
-      [user.tenantId || null, user.userId, meta_access_token.trim(), meta_business_id?.trim() || null, meta_catalog_id.trim(), meta_waba_id?.trim() || null]
-    );
-    res.json({ success: true, data: rows[0] });
+    const { data, error } = await supabaseAdmin
+      .from('tenant_meta_config')
+      .upsert({
+        tenant_id:         user.tenantId || null,
+        user_id:           user.userId,
+        meta_access_token: meta_access_token.trim(),
+        meta_business_id:  meta_business_id?.trim() || null,
+        meta_catalog_id:   meta_catalog_id.trim(),
+        meta_waba_id:      meta_waba_id?.trim() || null,
+        updated_at:        new Date().toISOString(),
+      }, { onConflict: 'tenant_id,user_id' })
+      .select('id, meta_business_id, meta_catalog_id, meta_waba_id, updated_at')
+      .single();
+    if (error) throw error;
+    res.json({ success: true, data });
   } catch (err: unknown) {
     res.status(500).json({ success: false, error: (err as Error).message });
   }
@@ -1569,14 +1559,25 @@ app.post('/api/catalog/products', requireAuth, async (req, res) => {
       } catch { crmWarning = 'Erro de rede ao acessar EvoAI CRM (salvo localmente).'; }
     }
 
-    const { rows } = await pool.query(
-      `INSERT INTO public.catalog_items (name, description, price, currency, availability, image_url, collection_id, meta_product_id, tenant_id, created_by)
-       VALUES ($1, $2, $3, 'BRL', $4, $5, $6, $7, $8, $9)
-       RETURNING id, name, description, price, image_url, availability, meta_product_id, collection_id, created_at`,
-      [name.trim(), description?.trim() || null, price ?? null, avail, image_url?.trim() || null, collection_id || null, crmProductId, user.tenantId || null, user.userId]
-    );
+    const { data, error } = await supabaseAdmin
+      .from('catalog_items')
+      .insert({
+        name:            name.trim(),
+        description:     description?.trim() || null,
+        price:           price ?? null,
+        currency:        'BRL',
+        availability:    avail,
+        image_url:       image_url?.trim() || null,
+        collection_id:   collection_id || null,
+        meta_product_id: crmProductId,
+        tenant_id:       user.tenantId || null,
+        created_by:      user.userId,
+      })
+      .select('id, name, description, price, image_url, availability, meta_product_id, collection_id, created_at')
+      .single();
+    if (error) throw error;
 
-    res.status(201).json({ success: true, data: rows[0], crm_synced: crmSynced, crm_product_id: crmProductId, ...(crmWarning ? { warning: crmWarning } : {}) });
+    res.status(201).json({ success: true, data, crm_synced: crmSynced, crm_product_id: crmProductId, ...(crmWarning ? { warning: crmWarning } : {}) });
   } catch (err: unknown) {
     res.status(500).json({ success: false, error: (err as Error).message });
   }
