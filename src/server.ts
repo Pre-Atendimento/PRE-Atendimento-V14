@@ -1624,6 +1624,18 @@ app.post('/api/catalog/products', requireAuth, async (req, res) => {
   }
 });
 
+/* ── 404 handler para rotas /api/* — sempre retorna JSON ────────────── */
+app.use('/api', (_req: Request, res: Response) => {
+  res.status(404).json({ success: false, error: 'Rota não encontrada.' });
+});
+
+/* ── Global error handler — captura erros não tratados e retorna JSON ── */
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+app.use((err: Error, _req: Request, res: Response, _next: NextFunction) => {
+  console.error('[Express] Erro não tratado:', err);
+  res.status(500).json({ success: false, error: err.message || 'Erro interno do servidor.' });
+});
+
 async function start() {
   try {
     await runMigrations();
