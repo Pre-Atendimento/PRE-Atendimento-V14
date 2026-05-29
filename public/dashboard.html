@@ -1872,6 +1872,21 @@
       gap: 2px;
       min-width: 0;
     }
+    .btn-monitor-refresh {
+      background: none;
+      border: none;
+      cursor: pointer;
+      color: var(--tx5);
+      font-size: 0.85rem;
+      line-height: 1;
+      padding: 2px 4px;
+      border-radius: 4px;
+      transition: color 0.15s, transform 0.15s;
+      flex-shrink: 0;
+    }
+    .btn-monitor-refresh:hover { color: var(--tx3); transform: rotate(30deg); }
+    .btn-monitor-refresh.spinning { animation: spin-once 0.5s linear; }
+    @keyframes spin-once { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
 
     .empty-state {
       text-align: center;
@@ -5344,9 +5359,13 @@
               <span>🕐 Último check: ${t}</span>
               ${failText}
             </div>
-            <span class="monitor-badge ${state}">
-              <span class="monitor-dot ${state}"></span>${label}
-            </span>`;
+            <div style="display:flex;align-items:center;gap:0.4rem;flex-shrink:0">
+              <span class="monitor-badge ${state}">
+                <span class="monitor-dot ${state}"></span>${label}
+              </span>
+              <button class="btn-monitor-refresh" title="Atualizar monitor"
+                onclick="this.classList.add('spinning');setTimeout(()=>this.classList.remove('spinning'),500);_loadInlineMonitor()">↻</button>
+            </div>`;
         });
       } catch { /* ignora erros de rede */ }
     }
