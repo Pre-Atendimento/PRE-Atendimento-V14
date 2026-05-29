@@ -1851,6 +1851,27 @@
       text-align: center; padding: 0.5rem 1rem 1.5rem;
       font-size: 0.71rem; color: var(--tx5);
     }
+    /* ── Inline monitor mini (dentro do inst-card) ── */
+    .inst-monitor-mini {
+      border-top: 1px solid var(--border);
+      padding: 0.45rem 1rem 0.5rem;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 0.5rem;
+      border-radius: 0 0 14px 14px;
+    }
+    .inst-monitor-mini.healthy { border-left: 3px solid #22c55e; }
+    .inst-monitor-mini.failure { border-left: 3px solid #ef4444; }
+    .inst-monitor-mini.unknown { border-left: 3px solid #94a3b8; }
+    .inst-monitor-mini-info {
+      font-size: 0.7rem;
+      color: var(--tx4);
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+      min-width: 0;
+    }
 
     .empty-state {
       text-align: center;
@@ -2462,7 +2483,7 @@
         onclick="showPanel('panel-list', null, 'bnav-list', 'snav-list')">
         Instâncias
       </button>
-      <button class="sidebar-nav-item" id="snav-monitor"
+      <button class="sidebar-nav-item" id="snav-monitor" style="display:none"
         onclick="showPanel('panel-monitor', null, 'bnav-monitor', 'snav-monitor')">
         Monitor
       </button>
@@ -2522,7 +2543,7 @@
         onclick="showPanel('panel-list', null, 'bnav-list', 'snav-list'); closeDrawer()">
         Instâncias
       </button>
-      <button class="drawer-nav-item" id="dnav-monitor"
+      <button class="drawer-nav-item" id="dnav-monitor" style="display:none"
         onclick="showPanel('panel-monitor', null, 'bnav-monitor', 'snav-monitor'); closeDrawer()">
         Monitor
       </button>
@@ -3347,7 +3368,7 @@
         onclick="showPanel('panel-list', null, 'bnav-list')">
         <span class="bottom-nav-icon">📋</span>Instâncias
       </div>
-      <div class="bottom-nav-item" id="bnav-monitor"
+      <div class="bottom-nav-item" id="bnav-monitor" style="display:none"
         onclick="showPanel('panel-monitor', null, 'bnav-monitor')">
         <span class="bottom-nav-icon">📡</span>Monitor
       </div>
@@ -4162,12 +4183,14 @@
                 }</span>
               </div>
               ${cardFooter}
+              ${orphan ? '' : `<div class="inst-monitor-mini" id="mon-mini-${inst.instance_name}"><span style="font-size:0.69rem;color:var(--tx5);padding:0.1rem 0">🕐 Verificando monitor...</span></div>`}
             </div>`;
         }).join('');
 
         /* Buscar status real apenas para instâncias normais (não órfãs) */
         json.data.filter(inst => !_isOrphan(inst)).forEach(inst => _fetchLiveStatus(inst.instance_name));
         _startStatusPoll();
+        _loadInlineMonitor();
 
       } catch {
         el.innerHTML = `<div class="empty-state"><div class="empty-icon">⚠️</div>Erro ao carregar.</div>`;
@@ -5289,6 +5312,45 @@
       if (el) el.textContent = '';
     }
 
+    /* ── Monitor inline: injeta status do monitor dentro de cada inst-card ── */
+    async function _loadInlineMonitor() {
+      try {
+        const r = await fetch('/api/monitor', { headers: getAuthHeaders() });
+        if (r.status === 401) return;
+        const j = await r.json();
+        const t = j.checkedAt ? new Date(j.checkedAt).toLocaleTimeString('pt-BR') : '—';
+        (j.data || []).filter(i => !i.orphan).forEach(inst => {
+          const el = document.getElementById(`mon-mini-${inst.name}`);
+          if (!el) return;
+          const apiStatus = inst.status || (inst.connected ? 'connected' : 'disconnected');
+          let state, label;
+          if (apiStatus === 'connected') {
+            state = 'healthy'; label = 'Healthy';
+            _monitorFails[inst.name] = 0;
+          } else if (apiStatus === 'error') {
+            state = 'unknown'; label = 'Indisponível';
+            _monitorFails[inst.name] = Math.min(99, (_monitorFails[inst.name] || 0) + 1);
+          } else {
+            state = 'failure'; label = 'Failure';
+            _monitorFails[inst.name] = Math.min(99, (_monitorFails[inst.name] || 0) + 1);
+          }
+          const fails = _monitorFails[inst.name] || 0;
+          const failText = fails > 0
+            ? `<span style="color:#f87171">⚠️ Falhas consecutivas: ${fails}</span>`
+            : `<span style="color:var(--tx3)">✅ Sem falhas</span>`;
+          el.className = `inst-monitor-mini ${state}`;
+          el.innerHTML = `
+            <div class="inst-monitor-mini-info">
+              <span>🕐 Último check: ${t}</span>
+              ${failText}
+            </div>
+            <span class="monitor-badge ${state}">
+              <span class="monitor-dot ${state}"></span>${label}
+            </span>`;
+        });
+      } catch { /* ignora erros de rede */ }
+    }
+
     /* ── Ajuste 3: pausar/retomar polling quando tab perde ou ganha foco ── */
     document.addEventListener('visibilitychange', () => {
       if (document.hidden) {
@@ -5301,6 +5363,7 @@
         }
         if (document.getElementById('panel-list')?.classList.contains('active')) {
           _startStatusPoll();
+          _loadInlineMonitor();
         }
       }
     });
