@@ -1,1 +1,2 @@
-- [Supabase-to-pg migration](supabase-pg-migration.md) — replaced Supabase SDK with a pg query-builder shim; Supabase keys are now optional (only for password-reset emails).
+- [Instance status sync](instance-status-sync.md) — GET /api/instances must query EvoGo live; DB status gets stale after QR scan.
+- [SUPABASE_DB_URL format](supabase-db-url-format.md) — must be postgresql:// pooler URI (port 6543), never the https:// dashboard URL; pg.Client hangs silently if wrong format given.

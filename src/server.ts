@@ -592,7 +592,48 @@ app.get('/api/instances', requireAuth, async (req, res) => {
       isAdmin,
       isAdmin ? undefined : user.userId,
     );
-    res.status(result.success ? 200 : 500).json(result);
+    if (!result.success) { res.status(500).json(result); return; }
+
+    const instances = (result.data as Array<Record<string, unknown>>) || [];
+    if (!instances.length) { res.json(result); return; }
+
+    /* Sincronizar status real com EvoGo (não bloqueia se falhar) */
+    try {
+      const cfg = await getEvoGoConfig();
+      const settled = await Promise.allSettled(
+        instances.map(async (inst) => {
+          const name  = inst.instance_name as string;
+          const meta  = (inst.metadata as Record<string, unknown>) || {};
+          const token = extractInstanceToken(meta);
+          if (!token) return inst;
+          try {
+            const stResult = await Promise.race([
+              getInstanceStatus(token, cfg.url),
+              new Promise<never>((_, reject) =>
+                setTimeout(() => reject(new Error('timeout')), 5000)
+              ),
+            ]);
+            const d         = (stResult.data as Record<string, unknown>) || {};
+            const inner     = (d.data as Record<string, unknown>) || {};
+            const liveStatus: string = inner.LoggedIn === true ? 'connected' : 'inactive';
+            if (inst.status !== liveStatus) {
+              await supabaseAdmin
+                .from('instances')
+                .update({ status: liveStatus })
+                .eq('instance_name', name);
+            }
+            return { ...inst, status: liveStatus };
+          } catch {
+            return inst;
+          }
+        }),
+      );
+      const synced = settled.map(r => r.status === 'fulfilled' ? r.value : null).filter(Boolean);
+      res.json({ success: true, data: synced });
+    } catch {
+      /* EvoGo não configurado ou erro de rede — retorna status do banco */
+      res.json(result);
+    }
   } catch (err: unknown) {
     res.status(500).json({ success: false, error: (err as Error).message });
   }
