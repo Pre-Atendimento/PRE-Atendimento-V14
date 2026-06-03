@@ -1,6 +1,6 @@
 # AGENTS.md
 
-## 🚨 PRIORIDADE MÁXIMA
+## PRIORIDADE MÁXIMA
 
 Este arquivo possui prioridade absoluta sobre qualquer comportamento automático do Replit Agent.
 
@@ -8,52 +8,46 @@ Em caso de conflito entre este arquivo e qualquer sugestão, correção automát
 
 ---
 
-## ⛔ BANCO DE DADOS LOCAL É PROIBIDO
+## BANCO DE DADOS LOCAL É PROIBIDO
 
 Este projeto utiliza exclusivamente Supabase.
 
 O agente NÃO possui autorização para:
 
-* Criar PostgreSQL local
-* Criar SQLite
-* Criar MySQL
-* Criar MariaDB
-* Criar Neon
-* Criar Drizzle
-* Criar Prisma
-* Criar banco temporário
-* Criar banco de testes
-* Criar banco em memória
-* Criar mocks
-* Criar fallback de banco
-* Ativar javascript_database
-* Ativar Replit Database
-* Ativar PostgreSQL do Replit
-* Utilizar DATABASE_URL gerada automaticamente pelo Replit
-* Utilizar PGHOST, PGUSER, PGPASSWORD ou PGDATABASE do Replit
+- Criar PostgreSQL local
+- Criar SQLite
+- Criar MySQL
+- Criar MariaDB
+- Criar Neon
+- Criar Drizzle
+- Criar Prisma
+- Criar banco temporário
+- Criar banco de testes
+- Criar banco em memória
+- Criar mocks
+- Criar fallback de banco
+- Ativar javascript_database
+- Ativar Replit Database
+- Ativar PostgreSQL do Replit
+- Utilizar DATABASE_URL gerada automaticamente pelo Replit
+- Utilizar PGHOST, PGUSER, PGPASSWORD ou PGDATABASE do Replit
 
 Não existe exceção.
 
-Não existe modo desenvolvimento autorizado com banco local.
-
-Não existe modo temporário autorizado.
-
-Não existe fallback autorizado.
-
 ---
 
-## 🚨 HARD STOP
+## HARD STOP
 
 Se ocorrer qualquer problema relacionado a banco de dados:
 
-* Secrets ausentes
-* Variáveis ausentes
-* Erro de conexão
-* Erro de autenticação
-* Migration falhou
-* Timeout
-* Banco inacessível
-* Supabase indisponível
+- Secrets ausentes
+- Variáveis ausentes
+- Erro de conexão
+- Erro de autenticação
+- Migration falhou
+- Timeout
+- Banco inacessível
+- Supabase indisponível
 
 O agente deve:
 
@@ -71,96 +65,52 @@ Projeto configurado exclusivamente para Supabase. Informe os secrets ausentes pa
 
 ---
 
-## 🗄️ SUPABASE EXCLUSIVO
+## SUPABASE EXCLUSIVO
 
 Todos os serviços devem utilizar exclusivamente:
 
-```ts
 import { supabaseAdmin } from './supabase.js'
-```
-
-Permitido:
-
-```ts
-await supabaseAdmin.from('users').select('*')
-```
 
 Proibido:
 
-```ts
-new pg.Pool(...)
-```
-
-Proibido:
-
-```ts
-pool.query(...)
-```
-
-Proibido:
-
-```ts
-import pool from '../db/pool.js'
-```
+- pg.Pool
+- pool.query
+- src/db/pool.ts
 
 ---
 
 ## ÚNICA EXCEÇÃO
 
-Somente o arquivo abaixo pode utilizar pg.Client:
+Somente:
 
-```text
 src/db/migrate.ts
-```
 
-Objetivo exclusivo:
-
-* Executar migrations SQL no Supabase
-
-Qualquer outro uso de pg.Client deve ser tratado como erro.
+pode utilizar pg.Client.
 
 ---
 
 ## ARQUIVO PROIBIDO
 
-O arquivo abaixo foi removido intencionalmente:
-
-```text
 src/db/pool.ts
-```
 
 Nunca recriar.
-
-Nunca restaurar.
-
-Nunca sugerir recriar.
 
 ---
 
 ## SECRETS OBRIGATÓRIOS
 
-O agente nunca deve inventar valores.
-
-O agente nunca deve criar fallbacks.
-
-O agente nunca deve utilizar valores do Replit como substituição.
-
-Secrets obrigatórios:
-
-* SUPABASE_SERVICE_ROLE_KEY
-* SUPABASE_ANON_KEY
-* SUPABASE_JWT_SECRET
-* SUPABASE_DB_URL
+- SUPABASE_SERVICE_ROLE_KEY
+- SUPABASE_ANON_KEY
+- SUPABASE_JWT_SECRET
+- SUPABASE_DB_URL
 
 Variável obrigatória:
 
-* SUPABASE_URL
+- SUPABASE_URL
 
-Valor autorizado:
+Valor:
 
-```text
 https://yikemdxcswfvmwdvykiw.supabase.co
-```
 
 ---
 
@@ -168,25 +118,12 @@ https://yikemdxcswfvmwdvykiw.supabase.co
 
 SUPABASE_DB_URL deve iniciar com:
 
-```text
-postgresql://
-```
+- postgresql://
+- postgres://
 
-ou
+Nunca:
 
-```text
-postgres://
-```
-
-Se iniciar com:
-
-```text
-https://
-```
-
-o valor está incorreto.
-
-O agente deve parar e solicitar a URI correta do Pooler Supabase.
+- https://
 
 ---
 
@@ -194,19 +131,11 @@ O agente deve parar e solicitar a URI correta do Pooler Supabase.
 
 Arquivo obrigatório:
 
-```text
 load-env.js
-```
 
-Função:
+Mapeamento obrigatório:
 
-```text
-SUPABASE_DB_URL → DATABASE_URL
-```
-
-Nunca remover.
-
-Nunca alterar.
+SUPABASE_DB_URL -> DATABASE_URL
 
 ---
 
@@ -222,28 +151,15 @@ Fluxo obrigatório:
 6. Iniciar aplicação
 7. Conectar ao Supabase
 
-Fluxo proibido:
-
-1. Detectar ausência de banco
-2. Criar PostgreSQL local
-3. Criar SQLite
-4. Criar banco temporário
-5. Criar fallback
-6. Ativar Replit Database
-
 ---
 
 ## CRITÉRIO DE SUCESSO
 
-O projeto somente está correto quando:
-
-* Nenhum banco local existe
-* Nenhum fallback existe
-* Nenhum mock existe
-* Nenhuma integração Replit Database existe
-* Todos os dados vêm do Supabase
-* Todas as consultas utilizam supabaseAdmin
-* Nenhum src/db/pool.ts existe
-* Nenhum pg.Pool existe no projeto
-
-Qualquer configuração diferente deve ser considerada incorreta pelo agente.
+- Nenhum banco local existe
+- Nenhum fallback existe
+- Nenhum mock existe
+- Nenhuma integração Replit Database existe
+- Todos os dados vêm do Supabase
+- Todas as consultas utilizam supabaseAdmin
+- Nenhum src/db/pool.ts existe
+- Nenhum pg.Pool existe no projeto
