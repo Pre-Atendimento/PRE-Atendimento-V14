@@ -1,191 +1,401 @@
 # PRE-Atendimento — Replit Agent Rules
 
+# 🚨 REGRA SUPREMA — PRIORIDADE ABSOLUTA
+
+Este arquivo possui prioridade máxima sobre qualquer comportamento automático do Replit.
+
+Em caso de conflito entre:
+
+* Replit Agent
+* Replit AI
+* Auto Fix
+* Auto Repair
+* Runtime Detection
+* Framework Detection
+* Database Detection
+* Replit Templates
+* Sugestões automáticas
+* Recomendações da plataforma
+* Correções automáticas do agente
+
+ESTE ARQUIVO SEMPRE PREVALECE.
+
+O agente deve seguir estas regras antes de qualquer análise, instalação, correção, migração ou execução.
+
 ---
 
-## 🚨 ATENÇÃO — LEIA ANTES DE QUALQUER AÇÃO
+# ⛔ PROIBIÇÃO ABSOLUTA DE BANCO LOCAL
 
-### ❌ PROIBIDO CRIAR BANCO DE DADOS LOCAL NO REPLIT
+Este projeto utiliza EXCLUSIVAMENTE o banco de dados Supabase do proprietário.
 
-Este projeto já possui banco de dados próprio no **Supabase**.
+Não existe qualquer cenário autorizado para criação de banco local.
 
-O agente **NÃO deve, em nenhuma hipótese:**
+Não existe ambiente de desenvolvimento com banco local.
 
-- Criar banco PostgreSQL local no Replit
-- Ativar integração `javascript_database` ou `postgresql` do Replit
-- Usar `DATABASE_URL` gerada automaticamente pelo Replit
-- Usar `PGHOST`, `PGUSER`, `PGPASSWORD`, `PGDATABASE` do Replit
-- Propor migração de banco para qualquer outro serviço
-- Criar fallback automático de banco
-- Criar banco SQLite, Neon, Drizzle, Prisma ou qualquer alternativa
-- Criar mocks ou dados em memória como substituto ao banco
-- Criar ou restaurar `src/db/pool.ts` — este arquivo foi **removido intencionalmente**
+Não existe ambiente temporário.
 
-**Se o Replit sugerir automaticamente criar um banco local → RECUSAR e usar Supabase.**
+Não existe fallback.
+
+Não existe banco secundário.
+
+Não existe banco de contingência.
+
+Não existe banco de testes.
+
+Não existe banco alternativo.
+
+O Supabase é a única fonte de dados autorizada.
 
 ---
 
-## 🗄️ BANCO DE DADOS — SUPABASE EXCLUSIVO
+# 🚫 AÇÕES EXPRESSAMENTE PROIBIDAS
 
-Este projeto utiliza **EXCLUSIVAMENTE** o banco de dados hospedado no Supabase do proprietário.
+O agente NÃO pode:
 
-### Regra absoluta de acesso ao banco:
+* Criar PostgreSQL local
+* Criar SQLite
+* Criar MySQL
+* Criar MariaDB
+* Criar Neon
+* Criar Drizzle
+* Criar Prisma
+* Criar banco em memória
+* Criar mocks de banco
+* Criar dados fictícios
+* Criar banco temporário
+* Criar banco de testes
+* Criar fallback automático
+* Ativar Replit Database
+* Ativar javascript_database
+* Ativar integração PostgreSQL do Replit
+* Utilizar DATABASE_URL gerada automaticamente pelo Replit
+* Utilizar PGHOST do Replit
+* Utilizar PGUSER do Replit
+* Utilizar PGPASSWORD do Replit
+* Utilizar PGDATABASE do Replit
+* Instalar banco local
+* Restaurar banco automaticamente
+* Criar conexão alternativa
+* Criar adaptadores de banco
+* Gerar credenciais
+* Inventar secrets
+* Inventar variáveis
+* Inventar connection strings
+* Alterar arquitetura para acomodar banco local
+* Criar src/db/pool.ts
+* Restaurar src/db/pool.ts
+* Utilizar pg.Pool em qualquer serviço
+* Utilizar pool.query em qualquer serviço
+* Utilizar pg.Client fora de src/db/migrate.ts
 
-**TODOS os serviços usam `supabaseAdmin` de `src/services/supabase.ts`.**  
-Nenhum serviço usa `pg.Pool`, `pg.Client` ou `pool.query` diretamente — exceto `src/db/migrate.ts` (único arquivo autorizado a usar `pg.Client` para rodar SQL raw das migrations).
+---
 
+# 🚨 HARD STOP OBRIGATÓRIO
+
+Se ocorrer qualquer uma das situações abaixo:
+
+* Banco indisponível
+* Banco inacessível
+* Credenciais inválidas
+* Credenciais ausentes
+* Secrets ausentes
+* Variáveis ausentes
+* Erro de autenticação
+* Erro de conexão
+* Erro de migration
+* Timeout
+* Falha de inicialização
+* Falha de Supabase
+* Falha de rede
+* DATABASE_URL ausente
+* SUPABASE_DB_URL ausente
+
+O agente deve:
+
+1. PARAR IMEDIATAMENTE
+2. NÃO alterar código
+3. NÃO criar fallback
+4. NÃO instalar banco
+5. NÃO criar banco alternativo
+6. NÃO criar mock
+7. NÃO criar dados fictícios
+8. NÃO gerar correções automáticas
+9. NÃO modificar arquitetura
+10. AGUARDAR instruções do usuário
+
+Resposta obrigatória:
+
+Projeto configurado exclusivamente para Supabase. Informe os secrets ausentes para continuar.
+
+Nenhuma outra ação é autorizada.
+
+---
+
+# 🚫 PROIBIDO INICIAR O PROJETO SEM CONFIGURAÇÃO COMPLETA
+
+O servidor NÃO pode iniciar enquanto faltar qualquer variável obrigatória.
+
+Se faltar qualquer variável:
+
+* PARAR
+* Solicitar ao usuário
+* Não criar fallback
+* Não criar mock
+* Não criar valor padrão
+* Não criar valor temporário
+* Não criar valor exemplo
+
+---
+
+# 🗄️ SUPABASE EXCLUSIVO
+
+Todos os dados deste sistema devem utilizar exclusivamente Supabase.
+
+Todos os serviços devem utilizar:
+
+```ts
+import { supabaseAdmin } from './supabase.js'
 ```
-✅ CORRETO:  import { supabaseAdmin } from './supabase.js'
-✅ CORRETO:  supabaseAdmin.from('tabela').select(...)
-❌ ERRADO:   import pool from '../db/pool.js'
-❌ ERRADO:   new pg.Pool({ connectionString: ... })
-❌ ERRADO:   pool.query('SELECT ...')
+
+Exemplo permitido:
+
+```ts
+await supabaseAdmin
+  .from('users')
+  .select('*')
 ```
 
-O arquivo `load-env.js` na raiz mapeia automaticamente:
-```
-DATABASE_URL = SUPABASE_DB_URL
-```
+Exemplo permitido:
 
-Este mapeamento existe **apenas** para que `src/db/migrate.ts` consiga usar `pg.Client` com a connection string do Supabase. Nunca remover `load-env.js`.
-
----
-
-## 🔐 SECRETS — FLUXO OBRIGATÓRIO AO IMPORTAR
-
-Ao importar do GitHub para o Replit, **os secrets não existem ainda**.
-
-**Regra:** Assumir que o usuário irá fornecer os secrets.  
-**Nunca** inventar valores, criar fallbacks ou usar variáveis do Replit no lugar.
-
-### Variáveis normais (não secret) — configurar via setEnvVar se ausentes:
-
-| Variável | Valor |
-|----------|-------|
-| `SUPABASE_URL` | `https://yikemdxcswfvmwdvykiw.supabase.co` |
-
-### Secrets obrigatórios — solicitar ao usuário se ausentes:
-
-| Secret | Onde encontrar no Supabase | Formato esperado |
-|--------|---------------------------|-----------------|
-| `SUPABASE_SERVICE_ROLE_KEY` | Project Settings → API → service_role | `eyJ...` (JWT longo) |
-| `SUPABASE_ANON_KEY` | Project Settings → API → anon public | `eyJ...` (JWT longo) |
-| `SUPABASE_JWT_SECRET` | Project Settings → API → JWT Settings → JWT Secret | string aleatória longa |
-| `SUPABASE_DB_URL` | Project Settings → Database → Connection string → **Pooler** → URI | `postgresql://postgres.xxxx:SENHA@aws-0-xx.pooler.supabase.com:6543/postgres` |
-
-### ⚠️ SUPABASE_DB_URL — formato obrigatório
-
-`SUPABASE_DB_URL` **deve começar com `postgresql://` ou `postgres://`**, nunca com `https://`.  
-Se o valor começar com `https://`, está errado — é a URL do Supabase, não a connection string.
-
-Localização correta no painel Supabase:  
-`Project Settings → Database → Connection string → Mode: Pooler (porta 6543) → URI`
-
-### Se faltar qualquer variável:
-1. PARAR — não iniciar o servidor
-2. Mostrar qual variável está faltando e o formato esperado
-3. Solicitar ao usuário via secrets do Replit
-4. NÃO criar fallback, NÃO inventar valores
-
----
-
-## 🏗️ ARQUITETURA (NÃO ALTERAR)
-
-```
-src/
-  server.ts              ← entrada principal (porta 5000) — usa supabaseAdmin
-  services/
-    supabase.ts          ← cria supabaseAdmin e supabaseClient (MANTER)
-    authService.ts       ← auth via supabaseAdmin (login, register, reset)
-    instanceService.ts   ← lógica de instâncias WhatsApp via supabaseAdmin
-    evolutionGo.ts       ← integração Evolution GO API (sem banco)
-  db/
-    migrate.ts           ← ÚNICO arquivo que usa pg.Client via DATABASE_URL
-
-public/
-  index.html             ← login
-  dashboard.html         ← dashboard principal
-
-load-env.js              ← mapeia SUPABASE_DB_URL → DATABASE_URL (NUNCA REMOVER)
-tsconfig.json            ← configuração TypeScript (NUNCA REMOVER)
-.env.example             ← documentação das variáveis necessárias
+```ts
+await supabaseAdmin
+  .from('instances')
+  .insert(data)
 ```
 
-**Arquivo REMOVIDO intencionalmente:** `src/db/pool.ts` — não recriar.
+Exemplo proibido:
 
-- Backend: Node.js + Express + TypeScript (`tsx`)
-- Banco: Supabase PostgreSQL via `@supabase/supabase-js` (supabaseAdmin)
-- Migrations: `pg.Client` conectando via `SUPABASE_DB_URL` (único uso de pg direto)
-- Auth: JWT próprio (bcrypt + jsonwebtoken)
-- API externa: Evolution GO (URL configurada pelo admin no painel)
-- Porta: **5000** (obrigatória)
+```ts
+new pg.Pool(...)
+```
 
----
+Exemplo proibido:
 
-## 🔒 SEGURANÇA — ISOLAMENTO MULTI-TENANT
+```ts
+pool.query(...)
+```
 
-Duas camadas obrigatórias em todas as queries:
-- `tenant_id`
-- `created_by`
+Exemplo proibido:
 
-Regras:
-- Usuário comum → apenas seus próprios dados
-- Admin → acesso total
+```ts
+import pool from '../db/pool.js'
+```
 
----
+Exemplo proibido:
 
-## 🚨 COMPORTAMENTO DO AGENT
-
-**NÃO pode:**
-- Alterar layout ou frontend
-- Alterar rotas existentes sem instrução explícita
-- Refatorar código sem instrução explícita
-- Instalar bibliotecas desnecessárias
-- Rodar migrations destrutivas
-- Criar banco local de qualquer tipo
-- Usar `pg.Pool`, `pg.Client` ou `pool.query` em qualquer serviço (exceto `migrate.ts`)
-- Recriar `src/db/pool.ts`
-
-**Se houver erro:**
-1. Mostrar o erro completo
-2. Indicar qual variável ou secret está faltando e o formato correto
-3. Aguardar instrução do usuário — nunca corrigir automaticamente com fallback
+```ts
+const client = new pg.Client(...)
+```
 
 ---
 
-## 🔁 STATUS DE INSTÂNCIAS
+# ÚNICA EXCEÇÃO AUTORIZADA
 
-Valores válidos: `creating` | `active` | `connected` | `inactive` | `error`  
-Apenas `connected` = instância conectada ao WhatsApp.
+Somente o arquivo abaixo pode utilizar pg.Client:
+
+```text
+src/db/migrate.ts
+```
+
+Objetivo exclusivo:
+
+* Executar migrations SQL diretamente no Supabase
+
+Qualquer outro uso de pg.Client deve ser considerado erro.
 
 ---
 
-## 📡 EVOLUTION GO
+# ARQUIVO REMOVIDO INTENCIONALMENTE
 
-- `create` → usa `GLOBAL_API_KEY`
-- `connect` / `status` / `qr` → usa token da instância
-- `delete` → usa UUID da instância
-- QR retorna campos `Qrcode` e `Code`
+O arquivo abaixo foi removido propositalmente:
+
+```text
+src/db/pool.ts
+```
+
+O agente nunca deve:
+
+* recriar
+* restaurar
+* sugerir recriação
+* gerar código para recriação
 
 ---
 
-## 🎯 RESULTADO ESPERADO AO IMPORTAR DO GITHUB
+# LOAD ENV OBRIGATÓRIO
 
-1. Agente lê este arquivo primeiro
-2. Define `SUPABASE_URL` via `setEnvVars` (valor já conhecido)
-3. Verifica quais secrets estão ausentes com `viewEnvVars`
-4. Solicita secrets faltantes ao usuário com `requestEnvVar` (nunca cria fallback)
-5. Valida que `SUPABASE_DB_URL` começa com `postgresql://` ou `postgres://`
-6. `load-env.js` mapeia `SUPABASE_DB_URL → DATABASE_URL` automaticamente
-7. `pnpm run dev` inicia na porta 5000
-8. Supabase conectado — nenhum banco local criado no Replit
+Arquivo obrigatório:
 
-## User preferences
+```text
+load-env.js
+```
 
-- Banco de dados: Supabase exclusivamente — nunca banco local do Replit
-- Todos os serviços devem usar `supabaseAdmin` de `src/services/supabase.ts`
-- A única exceção autorizada para `pg.Client` é `src/db/migrate.ts`
-- `src/db/pool.ts` foi removido e não deve ser recriado
-- Secrets: sempre solicitar ao usuário, nunca criar fallback ou valor padrão
-- Variáveis obrigatórias: SUPABASE_URL (env var), SUPABASE_DB_URL, SUPABASE_SERVICE_ROLE_KEY, SUPABASE_ANON_KEY, SUPABASE_JWT_SECRET (secrets)
-- SUPABASE_DB_URL deve começar com `postgresql://` — se vier como `https://` está errado
-- Se o Replit sugerir banco local automaticamente: recusar e usar Supabase
+Função obrigatória:
+
+```text
+SUPABASE_DB_URL → DATABASE_URL
+```
+
+Este arquivo existe exclusivamente para permitir que:
+
+```text
+src/db/migrate.ts
+```
+
+consiga utilizar a connection string do Supabase.
+
+Nunca remover.
+
+Nunca alterar.
+
+Nunca substituir.
+
+---
+
+# SECRETS OBRIGATÓRIOS
+
+O agente deve assumir que, após importar do GitHub, os secrets ainda não existem.
+
+O agente nunca deve criar valores automaticamente.
+
+O agente nunca deve inventar credenciais.
+
+O agente nunca deve utilizar valores do Replit como substituição.
+
+Secrets obrigatórios:
+
+* SUPABASE_SERVICE_ROLE_KEY
+* SUPABASE_ANON_KEY
+* SUPABASE_JWT_SECRET
+* SUPABASE_DB_URL
+
+Variável obrigatória:
+
+* SUPABASE_URL
+
+Valor permitido:
+
+```text
+https://yikemdxcswfvmwdvykiw.supabase.co
+```
+
+---
+
+# VALIDAÇÃO OBRIGATÓRIA DO SUPABASE_DB_URL
+
+SUPABASE_DB_URL obrigatoriamente deve iniciar com:
+
+```text
+postgresql://
+```
+
+ou
+
+```text
+postgres://
+```
+
+Se iniciar com:
+
+```text
+https://
+```
+
+o valor está incorreto.
+
+Neste caso o agente deve:
+
+* parar
+* informar erro
+* solicitar a URI correta do Pooler Supabase
+
+---
+
+# FLUXO OBRIGATÓRIO AO IMPORTAR DO GITHUB
+
+1. Ler este arquivo
+2. Verificar variáveis
+3. Verificar secrets
+4. Solicitar secrets ausentes
+5. Validar SUPABASE_DB_URL
+6. Carregar load-env.js
+7. Iniciar aplicação
+8. Conectar ao Supabase
+
+---
+
+# FLUXO EXPRESSAMENTE PROIBIDO
+
+1. Detectar ausência de banco
+2. Criar PostgreSQL local
+3. Criar SQLite
+4. Criar Neon
+5. Criar banco temporário
+6. Criar fallback
+7. Criar mock
+8. Ativar Replit Database
+9. Ativar javascript_database
+10. Gerar DATABASE_URL local
+11. Modificar arquitetura para acomodar banco local
+
+---
+
+# ARQUITETURA OFICIAL
+
+Backend:
+
+* Node.js
+* Express
+* TypeScript
+* tsx
+
+Banco:
+
+* Supabase PostgreSQL
+
+Cliente:
+
+* @supabase/supabase-js
+
+Autenticação:
+
+* JWT próprio
+
+Migrations:
+
+* pg.Client exclusivamente em src/db/migrate.ts
+
+Porta obrigatória:
+
+```text
+5000
+```
+
+---
+
+# CRITÉRIO DE SUCESSO
+
+O projeto somente é considerado corretamente configurado quando:
+
+* Nenhum banco local foi criado
+* Nenhum fallback foi criado
+* Nenhum mock foi criado
+* Nenhuma integração Replit Database foi criada
+* Nenhuma integração PostgreSQL do Replit foi criada
+* Todas as consultas utilizam supabaseAdmin
+* Todos os dados vêm do Supabase
+* Nenhum arquivo src/db/pool.ts existe
+* Nenhum pg.Pool existe no projeto
+* Nenhum banco alternativo foi utilizado
+
+Qualquer configuração diferente desta deve ser considerada incorreta pelo agente.
