@@ -1,29 +1,3 @@
-Sim. Mude principalmente isso:
-
-```toml
-[agent]
-stack = "nodejs"
-expertMode = true
-integrations = []
-```
-
-Remova esta linha porque ela força banco local:
-
-```toml
-integrations = ["javascript_database:1.0.0"]
-```
-
-E eu também removeria esta variável do `.replit`, porque parece secret exposto:
-
-```toml
-JWT_SECRET = "..."
-```
-
-Ela deve ficar em **Secrets**, não no arquivo GitHub.
-
-Versão ajustada:
-
-```toml
 modules = ["nodejs-24"]
 
 [deployment]
@@ -80,4 +54,3 @@ channel = "stable-25_05"
 [[ports]]
 localPort = 5000
 externalPort = 5000
-```
