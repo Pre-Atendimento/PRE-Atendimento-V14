@@ -227,8 +227,7 @@ export async function runMigrations(): Promise<void> {
 
   if (!connectionString.startsWith('postgres://') && !connectionString.startsWith('postgresql://')) {
     throw new Error(
-      `DATABASE_URL inválida: deve começar com "postgresql://" (recebido: "${connectionString.substring(0, 30)}..."). ` +
-      `Verifique SUPABASE_DB_URL — deve ser a URI do Pooler (porta 6543), não a URL HTTP do Supabase.`
+      `DATABASE_URL inválida: deve começar com "postgresql://" (recebido: "${connectionString.substring(0, 30)}...").`
     );
   }
 

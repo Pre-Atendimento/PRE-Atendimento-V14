@@ -43,6 +43,7 @@ integrations = ["javascript_database:1.0.0"]
 VITE_API_URL = ""
 PORT = "5000"
 SUPABASE_URL = "https://yikemdxcswfvmwdvykiw.supabase.co"
+JWT_SECRET = "c16178c092f409b601c6157f5c109b692c0ea3a54aafe07a28cdc3a396f428bd97d0eab98f7387ef482bf46694a61619"
 
 [userenv.development]
 VITE_API_URL = "/api"

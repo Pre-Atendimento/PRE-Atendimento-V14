@@ -1,8 +1,8 @@
 /**
  * load-env.js
- * Este arquivo deve ser o PRIMEIRO import em server.ts.
- * Define DATABASE_URL a partir de SUPABASE_DB_URL (Supabase Pooler).
+ * Replit provides DATABASE_URL directly. This file handles backwards compat
+ * for SUPABASE_DB_URL if someone still has it set.
  */
-if (process.env.SUPABASE_DB_URL) {
+if (!process.env.DATABASE_URL && process.env.SUPABASE_DB_URL) {
   process.env.DATABASE_URL = process.env.SUPABASE_DB_URL;
 }
